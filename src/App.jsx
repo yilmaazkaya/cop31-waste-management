@@ -1,11 +1,12 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, uploadPhoto, carbonOf, EMISSION } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
 
-const DEFAULT_ZONES = [
+const ZONES = [
   { id: "Z01", name: "Ana Konferans Salonu", area: "4.200 m²" },
   { id: "Z02", name: "Sergi Alanı A", area: "2.800 m²" },
   { id: "Z03", name: "Sergi Alanı B", area: "2.400 m²" },
@@ -31,31 +32,16 @@ const DESTINATIONS = ["Geri Dönüşüm Tesisi", "Kompost Alanı", "Düzenli Dep
 const ROLES = ["Temizlik", "Atık Toplama", "Denetim", "Araç Sürücü", "Saha Sorumlusu"];
 const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
 
-/* ═══════════ YARDIMCILAR ═══════════ */
-const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const now = () => new Date().toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" });
-const today = () => new Date().toLocaleDateString("tr-TR");
+const trDate = (iso) => new Date(iso).toLocaleDateString("tr-TR");
+const trTime = (iso) => new Date(iso).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+const isToday = (iso) => trDate(iso) === new Date().toLocaleDateString("tr-TR");
 
-function useStored(key, initial) {
-  const [val, setVal] = useState(() => {
-    try {
-      const s = localStorage.getItem(key);
-      return s ? JSON.parse(s) : initial;
-    } catch { return initial; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-  }, [key, val]);
-  return [val, setVal];
-}
-
-/* ═══════════ TASARIM SİSTEMİ ═══════════ */
+/* ═══════════ TASARIM ═══════════ */
 const T = {
   bg: "#f4f6f5", surface: "#ffffff", ink: "#16241d", sub: "#5c6b63", faint: "#8b988f",
   line: "#e3e8e5", green: "#1e6b45", greenSoft: "#e6f2ec", amber: "#b07d1e", amberSoft: "#faf3e3",
   red: "#b03030", redSoft: "#fbeaea", blue: "#2f6fb2", blueSoft: "#e9f1f9",
 };
-
 const S = {
   card: { background: T.surface, borderRadius: 14, border: `1px solid ${T.line}`, padding: 22, marginBottom: 16 },
   h2: { fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 4 },
@@ -70,176 +56,274 @@ const S = {
   tooltip: { background: "#fff", border: `1px solid ${T.line}`, borderRadius: 10, fontSize: 12.5, boxShadow: "0 4px 16px rgba(22,36,29,.08)" },
 };
 
-/* ═══════════ ANA UYGULAMA ═══════════ */
-export default function App() {
-  const [tab, setTab] = useState("dashboard");
-  const [zones] = useState(DEFAULT_ZONES);
-  const [staff, setStaff] = useStored("cop31_staff", []);
-  const [cleanLogs, setCleanLogs] = useStored("cop31_clean", []);
-  const [wasteLogs, setWasteLogs] = useStored("cop31_waste", []);
-  const [incidents, setIncidents] = useStored("cop31_incidents", []);
+/* ═══════════ KÖK: GİRİŞ + UYGULAMA ═══════════ */
+export default function Root() {
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("cop31_user")); } catch { return null; }
+  });
+  const login = (u) => { sessionStorage.setItem("cop31_user", JSON.stringify(u)); setUser(u); };
+  const logout = () => { sessionStorage.removeItem("cop31_user"); setUser(null); };
+  return user ? <App user={user} logout={logout} /> : <Login onLogin={login} />;
+}
 
-  // QR ile gelen bölge parametresi (?zone=Z01)
-  const [qrZone, setQrZone] = useState(null);
+/* ═══════════ GİRİŞ EKRANI ═══════════ */
+function Login({ onLogin }) {
+  const [staffList, setStaffList] = useState([]);
+  const [sel, setSel] = useState("");
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search).get("zone");
-    if (p && DEFAULT_ZONES.some(z => z.id === p)) {
-      setQrZone(p);
-      setTab("saha");
-    }
+    fetchAll("staff").then(s => { setStaffList(s.filter(x => x.active !== false)); setLoading(false); });
   }, []);
+
+  const tryLogin = () => {
+    const u = staffList.find(s => s.id === sel);
+    if (!u) return setErr("Personel seçin.");
+    if ((u.pin || "0000") !== pin) return setErr("PIN hatalı.");
+    onLogin({ id: u.id, name: u.name, role: u.role, is_admin: !!u.is_admin });
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ ...S.card, maxWidth: 380, width: "100%", textAlign: "center" }}>
+        <div style={{ width: 52, height: 52, borderRadius: 14, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, margin: "0 auto 14px" }}>31</div>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, color: T.ink }}>COP31 Atık Yönetimi</div>
+        <div style={{ fontSize: 13, color: T.sub, marginBottom: 22 }}>Antalya · Kasım 2026</div>
+
+        {loading ? (
+          <div style={{ color: T.faint, padding: 20 }}>Yükleniyor…</div>
+        ) : staffList.length === 0 ? (
+          <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.6, textAlign: "left", background: T.amberSoft, borderRadius: 10, padding: 14 }}>
+            Sistemde kayıtlı personel yok. {isOnline
+              ? "Supabase'de schema.sql çalıştırıldığında 'Yönetici' hesabı (PIN: 1907) otomatik oluşur."
+              : "Yerel modda ilk giriş için aşağıdan 'Yerel yönetici olarak devam et' seçin."}
+            {!isOnline && (
+              <button onClick={() => onLogin({ id: "local-admin", name: "Yerel Yönetici", role: "Saha Sorumlusu", is_admin: true })}
+                style={{ ...S.btn, ...S.btnGreen, width: "100%", marginTop: 12 }}>
+                Yerel yönetici olarak devam et
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
+            <select style={S.input} value={sel} onChange={e => { setSel(e.target.value); setErr(""); }}>
+              <option value="">Adınızı seçin</option>
+              {staffList.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
+            </select>
+            <input style={{ ...S.input, textAlign: "center", letterSpacing: 8, fontSize: 20 }} type="password" inputMode="numeric" maxLength={4}
+              placeholder="PIN" value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, "")); setErr(""); }}
+              onKeyDown={e => e.key === "Enter" && tryLogin()} />
+            {err && <div style={{ color: T.red, fontSize: 13, marginBottom: 10 }}>{err}</div>}
+            <button onClick={tryLogin} style={{ ...S.btn, ...S.btnGreen, width: "100%" }}>Giriş yap</button>
+          </>
+        )}
+
+        <div style={{ marginTop: 18, fontSize: 11.5, color: T.faint }}>
+          {isOnline ? "● Merkezi veritabanına bağlı" : "○ Yerel mod — Supabase bağlı değil (kurulum: KURULUM.md)"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════ ANA UYGULAMA ═══════════ */
+function App({ user, logout }) {
+  const [tab, setTab] = useState("dashboard");
+  const [staff, setStaff] = useState([]);
+  const [cleanLogs, setCleanLogs] = useState([]);
+  const [wasteLogs, setWasteLogs] = useState([]);
+  const [incidents, setIncidents] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [targets, setTargets] = useState([]);
+  const [qrZone, setQrZone] = useState(null);
+
+  const reload = useCallback(async () => {
+    const [s, c, w, i, a, t] = await Promise.all([
+      fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
+      fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
+    ]);
+    setStaff(s.filter(x => x.active !== false));
+    setCleanLogs(c.filter(x => x.active !== false));
+    setWasteLogs(w.filter(x => x.active !== false));
+    setIncidents(i.filter(x => x.active !== false));
+    setAssignments(a.filter(x => x.active !== false));
+    setTargets(t);
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const p = new URLSearchParams(window.location.search).get("zone");
+    if (p && ZONES.some(z => z.id === p)) { setQrZone(p); setTab("saha"); }
+    const iv = setInterval(reload, 30000); // 30 sn'de bir yenile (canlı görünüm)
+    return () => clearInterval(iv);
+  }, [reload]);
 
   const NAV = [
     { id: "dashboard", label: "Genel durum" },
     { id: "saha", label: "Saha kaydı" },
     { id: "atik", label: "Atık girişi" },
-    { id: "personel", label: "Personel" },
-    { id: "qr", label: "QR kodlar" },
+    { id: "gorev", label: "Görevler" },
     { id: "olay", label: "Olaylar" },
     { id: "rapor", label: "Rapor" },
+    ...(user.is_admin ? [
+      { id: "personel", label: "Personel" },
+      { id: "qr", label: "QR kodlar" },
+      { id: "hedef", label: "Hedefler" },
+    ] : []),
   ];
+
+  const ctx = { user, staff, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg }}>
-      {/* ÜST BAR */}
       <header style={{ background: T.surface, borderBottom: `1px solid ${T.line}`, padding: "0 20px", position: "sticky", top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", alignItems: "center", gap: 18, height: 62 }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", alignItems: "center", gap: 14, height: 62 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <div style={{ width: 34, height: 34, borderRadius: 9, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 13 }}>31</div>
             <div>
               <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 14.5, color: T.ink, lineHeight: 1.15 }}>COP31 Atık Yönetimi</div>
-              <div style={{ fontSize: 11, color: T.faint }}>Antalya · Kasım 2026</div>
+              <div style={{ fontSize: 11, color: T.faint }}>{isOnline ? "● Merkezi sistem" : "○ Yerel mod"} · {user.name}</div>
             </div>
           </div>
           <nav style={{ display: "flex", gap: 2, overflowX: "auto", marginLeft: "auto" }}>
             {NAV.map(n => (
               <button key={n.id} onClick={() => setTab(n.id)} style={{
-                ...S.btn, padding: "9px 14px", fontSize: 13.5, whiteSpace: "nowrap",
+                ...S.btn, padding: "9px 13px", fontSize: 13, whiteSpace: "nowrap",
                 background: tab === n.id ? T.greenSoft : "transparent",
-                color: tab === n.id ? T.green : T.sub,
-                fontWeight: tab === n.id ? 700 : 500,
+                color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
               }}>{n.label}</button>
             ))}
+            <button onClick={logout} title="Oturumu kapat" style={{ ...S.btn, padding: "9px 13px", fontSize: 13, background: "transparent", color: T.faint }}>Çıkış</button>
           </nav>
         </div>
       </header>
 
       <main style={{ maxWidth: 1100, margin: "0 auto", padding: "26px 20px 60px" }}>
-        {tab === "dashboard" && <Dashboard {...{ zones, staff, cleanLogs, wasteLogs, incidents }} />}
-        {tab === "saha" && <FieldEntry {...{ zones, staff, cleanLogs, setCleanLogs, qrZone, setQrZone }} />}
-        {tab === "atik" && <WasteEntry {...{ zones, wasteLogs, setWasteLogs }} />}
-        {tab === "personel" && <Personnel {...{ staff, setStaff, cleanLogs }} />}
-        {tab === "qr" && <QRManager zones={zones} />}
-        {tab === "olay" && <Incidents {...{ zones, incidents, setIncidents }} />}
-        {tab === "rapor" && <Report {...{ zones, staff, cleanLogs, wasteLogs, incidents }} />}
+        {tab === "dashboard" && <Dashboard {...ctx} />}
+        {tab === "saha" && <FieldEntry {...ctx} />}
+        {tab === "atik" && <WasteEntry {...ctx} />}
+        {tab === "gorev" && <Assignments {...ctx} />}
+        {tab === "olay" && <Incidents {...ctx} />}
+        {tab === "rapor" && <Report {...ctx} />}
+        {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
+        {tab === "qr" && user.is_admin && <QRManager />}
+        {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
       </main>
     </div>
   );
 }
 
 /* ═══════════ GENEL DURUM ═══════════ */
-function Dashboard({ zones, staff, cleanLogs, wasteLogs, incidents }) {
-  const totalWaste = wasteLogs.reduce((s, w) => s + w.amount, 0);
-  const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + w.amount, 0);
+function Dashboard({ cleanLogs, wasteLogs, incidents, targets, assignments }) {
+  const todayWaste = wasteLogs.filter(w => isToday(w.created_at));
+  const totalWaste = wasteLogs.reduce((s, w) => s + Number(w.amount), 0);
+  const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
   const rate = totalWaste > 0 ? Math.round((recycled / totalWaste) * 100) : 0;
-  const openIncidents = incidents.filter(i => i.status === "Açık").length;
+  const carbon = wasteLogs.reduce((s, w) => s + carbonOf(w), 0);
+  const openInc = incidents.filter(i => i.status === "Açık").length;
+
+  const tRate = targets.find(t => t.key === "recycle_rate")?.value ?? 75;
+  const tLandfill = targets.find(t => t.key === "max_landfill_kg")?.value ?? 500;
+  const todayLandfill = todayWaste.filter(w => w.destination === "Düzenli Depolama").reduce((s, w) => s + Number(w.amount), 0);
+
+  /* SLA gecikme kontrolü */
+  const delays = assignments.map(a => {
+    const last = cleanLogs.filter(c => c.zone === a.zone && c.action === "Çıkış").slice(-1)[0];
+    const hoursSince = last ? (Date.now() - new Date(last.created_at)) / 3600000 : Infinity;
+    return { ...a, hoursSince, late: hoursSince > Number(a.freq_hours || 4) };
+  }).filter(d => d.late);
 
   const byType = WASTE_TYPES.map(t => ({
-    name: t.name, value: wasteLogs.filter(w => w.type === t.id).reduce((s, w) => s + w.amount, 0), color: t.color,
+    name: t.name, value: wasteLogs.filter(w => w.type === t.id).reduce((s, w) => s + Number(w.amount), 0), color: t.color,
   })).filter(d => d.value > 0);
 
-  const byZone = zones.map(z => ({
-    name: z.id,
-    temizlik: cleanLogs.filter(c => c.zone === z.id).length,
-    atik: wasteLogs.filter(w => w.zone === z.id).reduce((s, w) => s + w.amount, 0),
-  })).filter(d => d.temizlik > 0 || d.atik > 0);
-
   const kpis = [
-    { label: "Bugünkü temizlik kaydı", value: cleanLogs.filter(c => c.date === today()).length, unit: "kayıt", accent: T.green },
+    { label: "Bugünkü temizlik", value: cleanLogs.filter(c => isToday(c.created_at)).length, unit: "kayıt", accent: T.green },
     { label: "Toplam atık", value: totalWaste.toLocaleString("tr-TR"), unit: "kg", accent: T.amber },
-    { label: "Geri dönüşüm oranı", value: rate, unit: "%", accent: T.blue },
-    { label: "Açık olay", value: openIncidents, unit: "bildirim", accent: openIncidents > 0 ? T.red : T.faint },
+    { label: `Geri dönüşüm (hedef %${tRate})`, value: rate, unit: "%", accent: rate >= tRate ? T.green : T.red },
+    { label: "Karbon ayak izi", value: carbon.toFixed(1), unit: "kg CO₂e", accent: T.blue },
+    { label: "Açık olay", value: openInc, unit: "bildirim", accent: openInc > 0 ? T.red : T.faint },
   ];
 
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 18 }}>
+      {delays.length > 0 && (
+        <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8" }}>
+          <div style={{ fontWeight: 700, color: T.red, fontSize: 14, marginBottom: 8 }}>⚠ Geciken temizlik görevleri</div>
+          {delays.map(d => (
+            <div key={d.id} style={{ fontSize: 13.5, color: T.ink, padding: "4px 0" }}>
+              <b>{ZONES.find(z => z.id === d.zone)?.name || d.zone}</b> — sorumlu: {d.staff_name} — son temizlikten bu yana{" "}
+              {d.hoursSince === Infinity ? "hiç kayıt yok" : `${d.hoursSince.toFixed(1)} saat geçti`} (hedef: {d.freq_hours} saat)
+            </div>
+          ))}
+        </div>
+      )}
+
+      {todayLandfill > tLandfill && (
+        <div style={{ ...S.card, background: T.amberSoft, borderColor: "#e5d5ab", fontSize: 13.5, color: "#7a5c17" }}>
+          ⚠ Bugünkü düzenli depolama miktarı ({todayLandfill} kg) günlük hedefi ({tLandfill} kg) aştı.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 18 }}>
         {kpis.map(k => (
           <div key={k.label} style={{ ...S.card, marginBottom: 0, padding: 18, borderTop: `3px solid ${k.accent}` }}>
             <div style={{ fontSize: 12, color: T.sub, fontWeight: 600, marginBottom: 8 }}>{k.label}</div>
-            <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 30, fontWeight: 800, color: T.ink, lineHeight: 1 }}>
-              {k.value}<span style={{ fontSize: 13, fontWeight: 500, color: T.faint, marginLeft: 6 }}>{k.unit}</span>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 28, fontWeight: 800, color: T.ink, lineHeight: 1 }}>
+              {k.value}<span style={{ fontSize: 12.5, fontWeight: 500, color: T.faint, marginLeft: 5 }}>{k.unit}</span>
             </div>
           </div>
         ))}
       </div>
 
-      {(cleanLogs.length === 0 && wasteLogs.length === 0) ? (
-        <div style={{ ...S.card, textAlign: "center", padding: 50 }}>
-          <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 8 }}>Sisteme hoş geldiniz</div>
-          <div style={{ fontSize: 13.5, color: T.sub, maxWidth: 420, margin: "0 auto", lineHeight: 1.65 }}>
-            Başlamak için önce <b>Personel</b> sekmesinden ekibinizi ekleyin, ardından <b>QR kodlar</b> sekmesinden bölge kodlarını yazdırıp alanlara asın.
-            Personel QR okuttuğunda kayıtlar burada görünecek.
-          </div>
-        </div>
-      ) : (
+      {byType.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16 }}>
-          {byType.length > 0 && (
-            <div style={S.card}>
-              <div style={S.h2}>Atık türü dağılımı</div>
-              <div style={S.sub}>Toplam {totalWaste.toLocaleString("tr-TR")} kg</div>
-              <ResponsiveContainer width="100%" height={230}>
-                <PieChart>
-                  <Pie data={byType} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={48} paddingAngle={2}>
-                    {byType.map((e, i) => <Cell key={i} fill={e.color} />)}
-                  </Pie>
-                  <Tooltip contentStyle={S.tooltip} formatter={(v, n) => [`${v} kg`, n]} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-          {byZone.length > 0 && (
-            <div style={S.card}>
-              <div style={S.h2}>Bölge aktivitesi</div>
-              <div style={S.sub}>Temizlik sayısı ve atık miktarı</div>
-              <ResponsiveContainer width="100%" height={230}>
-                <BarChart data={byZone}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: T.sub }} />
-                  <YAxis tick={{ fontSize: 11, fill: T.sub }} />
-                  <Tooltip contentStyle={S.tooltip} />
-                  <Bar dataKey="temizlik" fill={T.green} name="Temizlik" radius={[5, 5, 0, 0]} />
-                  <Bar dataKey="atik" fill={T.amber} name="Atık (kg)" radius={[5, 5, 0, 0]} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
+          <div style={S.card}>
+            <div style={S.h2}>Atık türü dağılımı</div>
+            <ResponsiveContainer width="100%" height={230}>
+              <PieChart>
+                <Pie data={byType} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={48} paddingAngle={2}>
+                  {byType.map((e, i) => <Cell key={i} fill={e.color} />)}
+                </Pie>
+                <Tooltip contentStyle={S.tooltip} formatter={(v, n) => [`${v} kg`, n]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={S.card}>
+            <div style={S.h2}>Karbon dağılımı (bertaraf yöntemine göre)</div>
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={DESTINATIONS.map(d => ({
+                name: d.split(" ")[0],
+                co2: wasteLogs.filter(w => w.destination === d).reduce((s, w) => s + carbonOf(w), 0),
+              })).filter(x => x.co2 > 0)}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: T.sub }} />
+                <YAxis tick={{ fontSize: 11, fill: T.sub }} />
+                <Tooltip contentStyle={S.tooltip} formatter={v => [`${v.toFixed(2)} kg CO₂e`]} />
+                <Bar dataKey="co2" fill={T.blue} radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-/* ═══════════ SAHA KAYDI (QR sonrası ekran) ═══════════ */
-function FieldEntry({ zones, staff, cleanLogs, setCleanLogs, qrZone, setQrZone }) {
+/* ═══════════ SAHA KAYDI ═══════════ */
+function FieldEntry({ user, cleanLogs, reload, qrZone }) {
   const [zone, setZone] = useState(qrZone || "");
-  const [person, setPerson] = useState("");
   const [notes, setNotes] = useState("");
   const [done, setDone] = useState(null);
+  const zoneObj = ZONES.find(z => z.id === zone);
 
-  useEffect(() => { if (qrZone) setZone(qrZone); }, [qrZone]);
-
-  const zoneObj = zones.find(z => z.id === zone);
-  const cleaners = staff.filter(s => s.role === "Temizlik" || s.role === "Saha Sorumlusu");
-
-  const log = (action) => {
-    if (!zone || !person) return;
-    const p = staff.find(s => s.id === person);
-    setCleanLogs(prev => [...prev, { id: genId(), zone, staff: p?.name || person, staffId: person, action, notes, time: now(), date: today() }]);
-    setDone(action);
-    setNotes("");
+  const log = async (action) => {
+    if (!zone) return;
+    await insertRow("clean_logs", { zone, staff_id: user.id === "local-admin" ? null : user.id, staff_name: user.name, action, notes }, user.name);
+    setDone(action); setNotes(""); reload();
     setTimeout(() => setDone(null), 2500);
   };
 
@@ -255,49 +339,27 @@ function FieldEntry({ zones, staff, cleanLogs, setCleanLogs, qrZone, setQrZone }
 
       <div style={S.card}>
         <div style={S.h2}>Saha kaydı</div>
-        <div style={S.sub}>Alanı temizlemeye başlarken "Giriş", bitirince "Çıkış" kaydı oluşturun.</div>
+        <div style={S.sub}>Kayıt <b>{user.name}</b> adına oluşturulur.</div>
 
         {!qrZone && (
           <>
             <label style={S.label}>Bölge</label>
             <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
               <option value="">Seçin</option>
-              {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+              {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
             </select>
           </>
-        )}
-
-        <label style={S.label}>Personel</label>
-        {cleaners.length === 0 ? (
-          <div style={{ ...S.card, background: T.amberSoft, borderColor: "#e5d5ab", padding: 14, fontSize: 13, color: "#7a5c17" }}>
-            Henüz personel eklenmemiş. Önce <b>Personel</b> sekmesinden ekip üyelerini ekleyin.
-          </div>
-        ) : (
-          <select style={S.input} value={person} onChange={e => setPerson(e.target.value)}>
-            <option value="">Seçin</option>
-            {cleaners.map(s => <option key={s.id} value={s.id}>{s.name} — {s.shift}</option>)}
-          </select>
         )}
 
         <label style={S.label}>Not (isteğe bağlı)</label>
         <input style={S.input} placeholder="Örn: Konteyner %80 dolu" value={notes} onChange={e => setNotes(e.target.value)} />
 
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={() => log("Giriş")} disabled={!zone || !person}
-            style={{ ...S.btn, ...S.btnGreen, flex: 1, opacity: (!zone || !person) ? 0.4 : 1 }}>
-            Giriş kaydı
-          </button>
-          <button onClick={() => log("Çıkış")} disabled={!zone || !person}
-            style={{ ...S.btn, flex: 1, background: T.ink, color: "#fff", opacity: (!zone || !person) ? 0.4 : 1 }}>
-            Çıkış kaydı
-          </button>
+          <button onClick={() => log("Giriş")} disabled={!zone} style={{ ...S.btn, ...S.btnGreen, flex: 1, opacity: !zone ? 0.4 : 1 }}>Giriş kaydı</button>
+          <button onClick={() => log("Çıkış")} disabled={!zone} style={{ ...S.btn, flex: 1, background: T.ink, color: "#fff", opacity: !zone ? 0.4 : 1 }}>Çıkış kaydı</button>
         </div>
 
-        {done && (
-          <div style={{ marginTop: 14, padding: 13, borderRadius: 10, background: T.greenSoft, color: T.green, fontWeight: 600, fontSize: 14, textAlign: "center" }}>
-            ✓ {done} kaydı oluşturuldu — {now()}
-          </div>
-        )}
+        {done && <div style={{ marginTop: 14, padding: 13, borderRadius: 10, background: T.greenSoft, color: T.green, fontWeight: 600, fontSize: 14, textAlign: "center" }}>✓ {done} kaydı oluşturuldu</div>}
       </div>
 
       {cleanLogs.length > 0 && (
@@ -307,9 +369,9 @@ function FieldEntry({ zones, staff, cleanLogs, setCleanLogs, qrZone, setQrZone }
             {cleanLogs.slice(-10).reverse().map(l => (
               <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13.5 }}>
                 <span style={S.tag(l.action === "Giriş" ? T.blueSoft : T.greenSoft, l.action === "Giriş" ? T.blue : T.green)}>{l.action}</span>
-                <span style={{ fontWeight: 600, color: T.ink }}>{l.staff}</span>
+                <span style={{ fontWeight: 600, color: T.ink }}>{l.staff_name}</span>
                 <span style={{ color: T.sub }}>{l.zone}</span>
-                <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{l.date} {l.time}</span>
+                <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
               </div>
             ))}
           </div>
@@ -320,18 +382,28 @@ function FieldEntry({ zones, staff, cleanLogs, setCleanLogs, qrZone, setQrZone }
 }
 
 /* ═══════════ ATIK GİRİŞİ ═══════════ */
-function WasteEntry({ zones, wasteLogs, setWasteLogs }) {
-  const [zone, setZone] = useState("");
-  const [type, setType] = useState("");
-  const [amount, setAmount] = useState("");
-  const [dest, setDest] = useState("");
-  const [vehicle, setVehicle] = useState("");
+function WasteEntry({ user, wasteLogs, reload }) {
+  const [f, setF] = useState({ zone: "", type: "", amount: "", destination: "", facility_license: "", uatf_no: "", vehicle: "", km: "" });
+  const [photo, setPhoto] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
 
-  const submit = () => {
-    if (!zone || !type || !amount || !dest) return;
-    setWasteLogs(prev => [...prev, { id: genId(), zone, type, amount: parseFloat(amount), destination: dest, vehicle, time: now(), date: today() }]);
-    setAmount(""); setType(""); setDone(true);
+  const isHaz = f.type === "hazardous";
+  const valid = f.zone && f.type && f.amount && f.destination && (!isHaz || f.uatf_no.trim());
+
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    let photo_url = null;
+    if (photo) photo_url = await uploadPhoto(photo);
+    await insertRow("waste_logs", {
+      zone: f.zone, type: f.type, amount: parseFloat(f.amount), destination: f.destination,
+      facility_license: f.facility_license || null, uatf_no: f.uatf_no || null,
+      vehicle: f.vehicle || null, km: parseFloat(f.km) || 0, photo_url, staff_name: user.name,
+    }, user.name);
+    setF({ zone: "", type: "", amount: "", destination: "", facility_license: "", uatf_no: "", vehicle: "", km: "" });
+    setPhoto(null); setBusy(false); setDone(true); reload();
     setTimeout(() => setDone(false), 2500);
   };
 
@@ -339,48 +411,64 @@ function WasteEntry({ zones, wasteLogs, setWasteLogs }) {
     <div style={{ maxWidth: 560, margin: "0 auto" }}>
       <div style={S.card}>
         <div style={S.h2}>Atık girişi</div>
-        <div style={S.sub}>Toplanan atığın türünü, miktarını ve gönderildiği yeri kaydedin.</div>
+        <div style={S.sub}>Tartı fişi fotoğrafı eklemeniz önerilir. Tehlikeli atıkta UATF numarası zorunludur.</div>
 
         <label style={S.label}>Kaynak bölge</label>
-        <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
+        <select style={S.input} value={f.zone} onChange={e => set("zone", e.target.value)}>
           <option value="">Seçin</option>
-          {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
         </select>
 
         <label style={S.label}>Atık türü</label>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, marginBottom: 14 }}>
           {WASTE_TYPES.map(t => (
-            <button key={t.id} onClick={() => setType(t.id)} style={{
+            <button key={t.id} onClick={() => set("type", t.id)} style={{
               ...S.btn, padding: "10px 8px", fontSize: 12.5,
-              background: type === t.id ? t.color : "#fbfcfb",
-              color: type === t.id ? "#fff" : T.sub,
-              border: `1.5px solid ${type === t.id ? t.color : T.line}`,
+              background: f.type === t.id ? t.color : "#fbfcfb",
+              color: f.type === t.id ? "#fff" : T.sub,
+              border: `1.5px solid ${f.type === t.id ? t.color : T.line}`,
             }}>{t.name}</button>
           ))}
         </div>
 
-        <label style={S.label}>Miktar (kg)</label>
-        <input style={S.input} type="number" min="0" placeholder="Örn: 45" value={amount} onChange={e => setAmount(e.target.value)} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div>
+            <label style={S.label}>Miktar (kg)</label>
+            <input style={S.input} type="number" min="0" placeholder="45" value={f.amount} onChange={e => set("amount", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Taşıma mesafesi (km)</label>
+            <input style={S.input} type="number" min="0" placeholder="12" value={f.km} onChange={e => set("km", e.target.value)} />
+          </div>
+        </div>
 
         <label style={S.label}>Gönderim yeri</label>
-        <select style={S.input} value={dest} onChange={e => setDest(e.target.value)}>
+        <select style={S.input} value={f.destination} onChange={e => set("destination", e.target.value)}>
           <option value="">Seçin</option>
           {DESTINATIONS.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
 
-        <label style={S.label}>Araç plakası (isteğe bağlı)</label>
-        <input style={S.input} placeholder="07 ABC 123" value={vehicle} onChange={e => setVehicle(e.target.value)} />
+        <label style={S.label}>Tesis çevre lisans no (isteğe bağlı)</label>
+        <input style={S.input} placeholder="Örn: 07-GDL-2026-0142" value={f.facility_license} onChange={e => set("facility_license", e.target.value)} />
 
-        <button onClick={submit} disabled={!zone || !type || !amount || !dest}
-          style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!zone || !type || !amount || !dest) ? 0.4 : 1 }}>
-          Kaydet
-        </button>
-
-        {done && (
-          <div style={{ marginTop: 14, padding: 13, borderRadius: 10, background: T.greenSoft, color: T.green, fontWeight: 600, fontSize: 14, textAlign: "center" }}>
-            ✓ Atık kaydı oluşturuldu
-          </div>
+        {isHaz && (
+          <>
+            <label style={{ ...S.label, color: T.red }}>UATF numarası (tehlikeli atıkta zorunlu)</label>
+            <input style={{ ...S.input, borderColor: f.uatf_no ? T.line : T.red }} placeholder="Ulusal Atık Taşıma Formu no" value={f.uatf_no} onChange={e => set("uatf_no", e.target.value)} />
+          </>
         )}
+
+        <label style={S.label}>Araç plakası</label>
+        <input style={S.input} placeholder="07 ABC 123" value={f.vehicle} onChange={e => set("vehicle", e.target.value)} />
+
+        <label style={S.label}>Kanıt fotoğrafı (tartı fişi vb.)</label>
+        <input style={{ ...S.input, padding: 9 }} type="file" accept="image/*" capture="environment" onChange={e => setPhoto(e.target.files?.[0] || null)} />
+        {!isOnline && photo && <div style={{ fontSize: 12, color: T.amber, marginTop: -8, marginBottom: 10 }}>Yerel modda fotoğraf kaydedilmez (Supabase gerekli).</div>}
+
+        <button onClick={submit} disabled={!valid || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!valid || busy) ? 0.4 : 1 }}>
+          {busy ? "Kaydediliyor…" : "Kaydet"}
+        </button>
+        {done && <div style={{ marginTop: 14, padding: 13, borderRadius: 10, background: T.greenSoft, color: T.green, fontWeight: 600, fontSize: 14, textAlign: "center" }}>✓ Atık kaydı oluşturuldu</div>}
       </div>
 
       {wasteLogs.length > 0 && (
@@ -390,11 +478,19 @@ function WasteEntry({ zones, wasteLogs, setWasteLogs }) {
             {wasteLogs.slice(-10).reverse().map(l => {
               const wt = WASTE_TYPES.find(t => t.id === l.type);
               return (
-                <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13.5, flexWrap: "wrap" }}>
-                  <span style={S.tag(wt.color + "1a", wt.color)}>{wt.name}</span>
-                  <span style={{ fontWeight: 700, color: T.ink }}>{l.amount} kg</span>
-                  <span style={{ color: T.sub }}>{l.zone} → {l.destination}</span>
-                  <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{l.date} {l.time}</span>
+                <div key={l.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13.5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={S.tag(wt.color + "1a", wt.color)}>{wt.name}</span>
+                    <span style={{ fontWeight: 700, color: T.ink }}>{l.amount} kg</span>
+                    <span style={{ color: T.sub }}>{l.zone} → {l.destination}</span>
+                    {l.photo_url && <a href={l.photo_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: T.blue }}>📷 kanıt</a>}
+                    <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
+                  </div>
+                  {(l.uatf_no || l.facility_license) && (
+                    <div style={{ fontSize: 12, color: T.faint, marginTop: 3 }}>
+                      {l.uatf_no && `UATF: ${l.uatf_no}`} {l.facility_license && ` · Lisans: ${l.facility_license}`}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -405,75 +501,64 @@ function WasteEntry({ zones, wasteLogs, setWasteLogs }) {
   );
 }
 
-/* ═══════════ PERSONEL YÖNETİMİ ═══════════ */
-function Personnel({ staff, setStaff, cleanLogs }) {
-  const [name, setName] = useState("");
-  const [role, setRole] = useState(ROLES[0]);
-  const [shift, setShift] = useState(SHIFTS[0]);
-  const [phone, setPhone] = useState("");
+/* ═══════════ GÖREVLER (SLA) ═══════════ */
+function Assignments({ user, staff, assignments, cleanLogs, reload }) {
+  const [zone, setZone] = useState("");
+  const [person, setPerson] = useState("");
+  const [freq, setFreq] = useState("4");
 
-  const add = () => {
-    if (!name.trim()) return;
-    setStaff(prev => [...prev, { id: genId(), name: name.trim(), role, shift, phone, added: today() }]);
-    setName(""); setPhone("");
+  const add = async () => {
+    if (!zone || !person) return;
+    const p = staff.find(s => s.id === person);
+    await insertRow("assignments", { zone, staff_id: person, staff_name: p?.name, freq_hours: parseFloat(freq) || 4 }, user.name);
+    setZone(""); setPerson(""); reload();
   };
-
-  const remove = (id) => setStaff(prev => prev.filter(s => s.id !== id));
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-      <div style={S.card}>
-        <div style={S.h2}>Yeni personel ekle</div>
-        <div style={S.sub}>Ekip üyelerini buradan sisteme kaydedin.</div>
-
-        <label style={S.label}>Ad Soyad</label>
-        <input style={S.input} placeholder="Örn: Ayşe Yılmaz" value={name} onChange={e => setName(e.target.value)} />
-
-        <label style={S.label}>Görev</label>
-        <select style={S.input} value={role} onChange={e => setRole(e.target.value)}>
-          {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
-
-        <label style={S.label}>Vardiya</label>
-        <select style={S.input} value={shift} onChange={e => setShift(e.target.value)}>
-          {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-
-        <label style={S.label}>Telefon (isteğe bağlı)</label>
-        <input style={S.input} placeholder="05xx xxx xx xx" value={phone} onChange={e => setPhone(e.target.value)} />
-
-        <button onClick={add} disabled={!name.trim()} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: !name.trim() ? 0.4 : 1 }}>
-          Personeli ekle
-        </button>
-      </div>
+      {user.is_admin && (
+        <div style={S.card}>
+          <div style={S.h2}>Görev ata</div>
+          <div style={S.sub}>Bir bölgeyi bir personele bağlayın ve temizlik sıklığı (SLA) belirleyin.</div>
+          <label style={S.label}>Bölge</label>
+          <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
+            <option value="">Seçin</option>
+            {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          </select>
+          <label style={S.label}>Sorumlu personel</label>
+          <select style={S.input} value={person} onChange={e => setPerson(e.target.value)}>
+            <option value="">Seçin</option>
+            {staff.map(s => <option key={s.id} value={s.id}>{s.name} — {s.shift}</option>)}
+          </select>
+          <label style={S.label}>Temizlik sıklığı (saat)</label>
+          <input style={S.input} type="number" min="0.5" step="0.5" value={freq} onChange={e => setFreq(e.target.value)} />
+          <button onClick={add} disabled={!zone || !person} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!zone || !person) ? 0.4 : 1 }}>Ata</button>
+        </div>
+      )}
 
       <div style={S.card}>
-        <div style={S.h2}>Ekip ({staff.length})</div>
-        {staff.length === 0 ? (
-          <div style={{ padding: "30px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
-            Henüz personel eklenmedi. Soldaki formu kullanın.
-          </div>
+        <div style={S.h2}>Aktif görevler ({assignments.length})</div>
+        {assignments.length === 0 ? (
+          <div style={{ padding: "30px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz görev atanmadı.</div>
         ) : (
           <div style={{ marginTop: 10 }}>
-            {staff.map(s => {
-              const count = cleanLogs.filter(c => c.staffId === s.id).length;
+            {assignments.map(a => {
+              const last = cleanLogs.filter(c => c.zone === a.zone && c.action === "Çıkış").slice(-1)[0];
+              const hrs = last ? (Date.now() - new Date(last.created_at)) / 3600000 : null;
+              const late = hrs === null || hrs > Number(a.freq_hours);
               return (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: T.green, flexShrink: 0 }}>
-                    {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: `1px solid ${T.line}`, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{ZONES.find(z => z.id === a.zone)?.name || a.zone}</div>
+                    <div style={{ fontSize: 12.5, color: T.sub }}>{a.staff_name} · her {a.freq_hours} saatte</div>
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}</div>
-                    <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
-                  </div>
-                  <div style={{ textAlign: "center", flexShrink: 0 }}>
-                    <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>{count}</div>
-                    <div style={{ fontSize: 10.5, color: T.faint }}>kayıt</div>
-                  </div>
-                  <button onClick={() => remove(s.id)} title="Personeli sil"
-                    style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>
-                    Sil
-                  </button>
+                  <span style={S.tag(late ? T.redSoft : T.greenSoft, late ? T.red : T.green)}>
+                    {hrs === null ? "Kayıt yok" : late ? `${hrs.toFixed(1)} sa gecikme` : "Zamanında"}
+                  </span>
+                  {user.is_admin && (
+                    <button onClick={async () => { await deactivateRow("assignments", a.id, user.name); reload(); }}
+                      style={{ ...S.btn, padding: "6px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
+                  )}
                 </div>
               );
             })}
@@ -484,82 +569,33 @@ function Personnel({ staff, setStaff, cleanLogs }) {
   );
 }
 
-/* ═══════════ QR KOD YÖNETİMİ ═══════════ */
-function QRManager({ zones }) {
-  const [printing, setPrinting] = useState(false);
-
-  const doPrint = () => {
-    setPrinting(true);
-    setTimeout(() => { window.print(); setPrinting(false); }, 200);
-  };
-
-  return (
-    <div>
-      <div style={S.card}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <div style={S.h2}>Bölge QR kodları</div>
-            <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.65 }}>
-              Her bölgenin kendi QR kodu vardır. Bu sayfayı yazdırıp kodları ilgili alanların girişine asın.
-              Personel telefon kamerasıyla kodu okuttuğunda sistem otomatik olarak açılır ve <b>o bölge seçili gelir</b> —
-              tek yapması gereken adını seçip "Giriş" düğmesine basmaktır.
-            </div>
-          </div>
-          <button onClick={doPrint} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>
-            Tümünü yazdır
-          </button>
-        </div>
-      </div>
-
-      <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
-        {zones.map(z => (
-          <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
-            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
-            <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id} · {z.area}</div>
-            <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
-              <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
-            </div>
-            <div style={{ fontSize: 11, color: T.faint, marginTop: 12, wordBreak: "break-all" }}>{APP_URL}/?zone={z.id}</div>
-            <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /* ═══════════ OLAYLAR ═══════════ */
-function Incidents({ zones, incidents, setIncidents }) {
+function Incidents({ user, incidents, reload }) {
   const [zone, setZone] = useState("");
   const [severity, setSeverity] = useState("low");
   const [desc, setDesc] = useState("");
-
   const SEV = {
     low: { label: "Düşük", color: T.blue, soft: T.blueSoft },
     medium: { label: "Orta", color: T.amber, soft: T.amberSoft },
     high: { label: "Yüksek", color: T.red, soft: T.redSoft },
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!zone || !desc.trim()) return;
-    setIncidents(prev => [...prev, { id: genId(), zone, severity, description: desc.trim(), time: now(), date: today(), status: "Açık" }]);
-    setDesc("");
+    await insertRow("incidents", { zone, severity, description: desc.trim(), status: "Açık", staff_name: user.name }, user.name);
+    setDesc(""); reload();
   };
-
-  const close = (id) => setIncidents(prev => prev.map(i => i.id === id ? { ...i, status: "Kapatıldı" } : i));
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
       <div style={S.card}>
         <div style={S.h2}>Olay bildir</div>
-        <div style={S.sub}>Dökülme, arıza, taşma veya güvenlik sorunlarını kaydedin.</div>
-
+        <div style={S.sub}>Dökülme, arıza, taşma veya güvenlik sorunları.</div>
         <label style={S.label}>Bölge</label>
         <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
           <option value="">Seçin</option>
-          {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
         </select>
-
         <label style={S.label}>Önem</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
           {Object.entries(SEV).map(([k, v]) => (
@@ -571,14 +607,9 @@ function Incidents({ zones, incidents, setIncidents }) {
             }}>{v.label}</button>
           ))}
         </div>
-
         <label style={S.label}>Açıklama</label>
         <textarea style={{ ...S.input, height: 90, resize: "vertical" }} placeholder="Ne oldu?" value={desc} onChange={e => setDesc(e.target.value)} />
-
-        <button onClick={submit} disabled={!zone || !desc.trim()}
-          style={{ ...S.btn, ...S.btnRed, width: "100%", opacity: (!zone || !desc.trim()) ? 0.4 : 1 }}>
-          Bildir
-        </button>
+        <button onClick={submit} disabled={!zone || !desc.trim()} style={{ ...S.btn, ...S.btnRed, width: "100%", opacity: (!zone || !desc.trim()) ? 0.4 : 1 }}>Bildir</button>
       </div>
 
       <div style={S.card}>
@@ -591,19 +622,16 @@ function Incidents({ zones, incidents, setIncidents }) {
               <div key={i.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={S.tag(SEV[i.severity].soft, SEV[i.severity].color)}>{SEV[i.severity].label}</span>
-                  <span style={{ fontSize: 13, color: T.sub }}>{i.zone}</span>
+                  <span style={{ fontSize: 13, color: T.sub }}>{i.zone} · {i.staff_name}</span>
                   <span style={{ marginLeft: "auto" }}>
                     {i.status === "Açık" ? (
-                      <button onClick={() => close(i.id)} style={{ ...S.btn, padding: "5px 12px", fontSize: 12, background: T.greenSoft, color: T.green }}>
-                        Kapat
-                      </button>
-                    ) : (
-                      <span style={S.tag("#eef0ef", T.faint)}>Kapatıldı</span>
-                    )}
+                      <button onClick={async () => { await updateRow("incidents", i.id, { status: "Kapatıldı" }, user.name); reload(); }}
+                        style={{ ...S.btn, padding: "5px 12px", fontSize: 12, background: T.greenSoft, color: T.green }}>Kapat</button>
+                    ) : <span style={S.tag("#eef0ef", T.faint)}>Kapatıldı</span>}
                   </span>
                 </div>
                 <div style={{ fontSize: 14, color: T.ink, marginTop: 6 }}>{i.description}</div>
-                <div style={{ fontSize: 12, color: T.faint, marginTop: 3 }}>{i.date} {i.time}</div>
+                <div style={{ fontSize: 12, color: T.faint, marginTop: 3 }}>{trDate(i.created_at)} {trTime(i.created_at)}</div>
               </div>
             ))}
           </div>
@@ -613,31 +641,180 @@ function Incidents({ zones, incidents, setIncidents }) {
   );
 }
 
+/* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
+function Personnel({ user, staff, cleanLogs, reload }) {
+  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+
+  const add = async () => {
+    if (!f.name.trim() || f.pin.length !== 4) return;
+    await insertRow("staff", { ...f, name: f.name.trim() }, user.name);
+    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
+    reload();
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Yeni personel</div>
+        <div style={S.sub}>PIN 4 haneli olmalı — personel bu kodla giriş yapar.</div>
+        <label style={S.label}>Ad Soyad</label>
+        <input style={S.input} placeholder="Ayşe Yılmaz" value={f.name} onChange={e => set("name", e.target.value)} />
+        <label style={S.label}>Görev</label>
+        <select style={S.input} value={f.role} onChange={e => set("role", e.target.value)}>
+          {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <label style={S.label}>Vardiya</label>
+        <select style={S.input} value={f.shift} onChange={e => set("shift", e.target.value)}>
+          {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div>
+            <label style={S.label}>Telefon</label>
+            <input style={S.input} placeholder="05xx…" value={f.phone} onChange={e => set("phone", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>PIN (4 hane)</label>
+            <input style={S.input} maxLength={4} inputMode="numeric" placeholder="****" value={f.pin} onChange={e => set("pin", e.target.value.replace(/\D/g, ""))} />
+          </div>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: T.sub, marginBottom: 14, cursor: "pointer" }}>
+          <input type="checkbox" checked={f.is_admin} onChange={e => set("is_admin", e.target.checked)} />
+          Yönetici yetkisi (personel/QR/hedef ekranlarını görür)
+        </label>
+        <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4}
+          style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.name.trim() || f.pin.length !== 4) ? 0.4 : 1 }}>Ekle</button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Ekip ({staff.length})</div>
+        <div style={{ marginTop: 10 }}>
+          {staff.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
+                {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
+                <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
+              </div>
+              <div style={{ textAlign: "center", flexShrink: 0 }}>
+                <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>
+                  {cleanLogs.filter(c => c.staff_id === s.id).length}
+                </div>
+                <div style={{ fontSize: 10.5, color: T.faint }}>kayıt</div>
+              </div>
+              {s.id !== user.id && (
+                <button onClick={async () => { await deactivateRow("staff", s.id, user.name); reload(); }}
+                  style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Pasifleştir</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════ QR ═══════════ */
+function QRManager() {
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={S.h2}>Bölge QR kodları</div>
+            <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.65 }}>
+              Yazdırıp alan girişlerine asın. Personel telefonla okuttuğunda sistem o bölge seçili açılır;
+              kendi PIN'i ile giriş yaptığı için kayıt otomatik olarak onun adına oluşur.
+            </div>
+          </div>
+          <button onClick={() => window.print()} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>Tümünü yazdır</button>
+        </div>
+      </div>
+      <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
+        {ZONES.map(z => (
+          <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
+            <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id} · {z.area}</div>
+            <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
+              <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════ HEDEFLER (ISO 20121) ═══════════ */
+function Targets({ user, targets, reload }) {
+  const [vals, setVals] = useState({});
+  useEffect(() => {
+    setVals(Object.fromEntries(targets.map(t => [t.key, t.value])));
+  }, [targets]);
+
+  const save = async (t) => {
+    await updateRow("targets", t.id, { value: parseFloat(vals[t.key]) || 0 }, user.name);
+    reload();
+  };
+
+  return (
+    <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Sürdürülebilirlik hedefleri</div>
+        <div style={S.sub}>ISO 20121 hedef–gerçekleşen takibi. Dashboard bu değerlerle karşılaştırır ve aşımda uyarır.</div>
+        {targets.length === 0 ? (
+          <div style={{ fontSize: 13.5, color: T.sub, background: T.amberSoft, borderRadius: 10, padding: 14 }}>
+            Hedefler yalnız merkezi modda düzenlenir. Supabase kurulumunu tamamlayın (KURULUM.md).
+          </div>
+        ) : targets.map(t => (
+          <div key={t.id} style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 4 }}>
+            <div style={{ flex: 1 }}>
+              <label style={S.label}>{t.label}</label>
+              <input style={S.input} type="number" value={vals[t.key] ?? ""} onChange={e => setVals(p => ({ ...p, [t.key]: e.target.value }))} />
+            </div>
+            <button onClick={() => save(t)} style={{ ...S.btn, ...S.btnGhost, marginBottom: 14 }}>Kaydet</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ ...S.card, fontSize: 12.5, color: T.faint, lineHeight: 1.6 }}>
+        Karbon faktörleri: geri dönüşüm {EMISSION["Geri Dönüşüm Tesisi"]}, kompost {EMISSION["Kompost Alanı"]}, depolama {EMISSION["Düzenli Depolama"]} kg CO₂e/kg;
+        taşıma {EMISSION.TRANSPORT_PER_TON_KM} kg CO₂e/ton-km. Resmî raporlamada ulusal faktörlerle doğrulanmalıdır.
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════ RAPOR ═══════════ */
-function Report({ zones, staff, cleanLogs, wasteLogs, incidents }) {
-  const totalWaste = wasteLogs.reduce((s, w) => s + w.amount, 0);
-  const byDest = DESTINATIONS.map(d => ({
-    name: d, value: wasteLogs.filter(w => w.destination === d).reduce((s, w) => s + w.amount, 0),
-  })).filter(x => x.value > 0);
-  const recycled = byDest.find(d => d.name === "Geri Dönüşüm Tesisi")?.value || 0;
+function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
+  const totalWaste = wasteLogs.reduce((s, w) => s + Number(w.amount), 0);
+  const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
+  const carbon = wasteLogs.reduce((s, w) => s + carbonOf(w), 0);
+  const tRate = targets.find(t => t.key === "recycle_rate")?.value ?? 75;
+  const rate = totalWaste > 0 ? Math.round((recycled / totalWaste) * 100) : 0;
 
   const rows = [
-    ["Rapor tarihi", today()],
+    ["Rapor tarihi", new Date().toLocaleDateString("tr-TR")],
     ["Toplam temizlik kaydı", cleanLogs.length],
     ["Kayıtlı personel", staff.length],
     ["Toplam atık", `${totalWaste.toLocaleString("tr-TR")} kg`],
     ["Geri dönüşüme gönderilen", `${recycled.toLocaleString("tr-TR")} kg`],
-    ["Geri dönüşüm oranı", totalWaste > 0 ? `%${Math.round((recycled / totalWaste) * 100)}` : "—"],
-    ["Toplam olay bildirimi", incidents.length],
-    ["Açık olay", incidents.filter(i => i.status === "Açık").length],
-    ["Aktif bölge sayısı", new Set([...cleanLogs.map(c => c.zone), ...wasteLogs.map(w => w.zone)]).size],
+    ["Geri dönüşüm oranı / hedef", totalWaste > 0 ? `%${rate} / %${tRate}` : "—"],
+    ["Toplam karbon ayak izi", `${carbon.toFixed(1)} kg CO₂e`],
+    ["Fotoğraflı (kanıtlı) atık kaydı", wasteLogs.filter(w => w.photo_url).length],
+    ["UATF'li tehlikeli atık kaydı", wasteLogs.filter(w => w.uatf_no).length],
+    ["Toplam olay / açık", `${incidents.length} / ${incidents.filter(i => i.status === "Açık").length}`],
   ];
 
   const exportCSV = () => {
-    let csv = "\uFEFFTip;Tarih;Saat;Bölge;Detay;Miktar/İşlem\n";
-    cleanLogs.forEach(c => { csv += `Temizlik;${c.date};${c.time};${c.zone};${c.staff};${c.action}\n`; });
-    wasteLogs.forEach(w => { csv += `Atık;${w.date};${w.time};${w.zone};${WASTE_TYPES.find(t => t.id === w.type)?.name} → ${w.destination};${w.amount} kg\n`; });
-    incidents.forEach(i => { csv += `Olay;${i.date};${i.time};${i.zone};${i.description};${i.status}\n`; });
+    let csv = "\uFEFFTip;Tarih;Saat;Bölge;Personel;Detay;Miktar;UATF;Lisans;km;CO2e(kg);Fotoğraf\n";
+    cleanLogs.forEach(c => { csv += `Temizlik;${trDate(c.created_at)};${trTime(c.created_at)};${c.zone};${c.staff_name};${c.action} ${c.notes || ""};;;;;;\n`; });
+    wasteLogs.forEach(w => {
+      csv += `Atık;${trDate(w.created_at)};${trTime(w.created_at)};${w.zone};${w.staff_name || ""};${WASTE_TYPES.find(t => t.id === w.type)?.name} → ${w.destination};${w.amount};${w.uatf_no || ""};${w.facility_license || ""};${w.km || 0};${carbonOf(w).toFixed(3)};${w.photo_url || ""}\n`;
+    });
+    incidents.forEach(i => { csv += `Olay;${trDate(i.created_at)};${trTime(i.created_at)};${i.zone};${i.staff_name || ""};${i.description};;;;;;${i.status}\n`; });
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -651,7 +828,7 @@ function Report({ zones, staff, cleanLogs, wasteLogs, incidents }) {
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
           <div style={{ flex: 1 }}>
             <div style={S.h2}>Günlük özet rapor</div>
-            <div style={{ fontSize: 13, color: T.sub }}>UNFCCC sürdürülebilirlik raporlama formatına uygun özet.</div>
+            <div style={{ fontSize: 13, color: T.sub }}>UNFCCC sürdürülebilirlik formatına uygun; CSV tüm ham veriyi içerir.</div>
           </div>
           <button onClick={exportCSV} style={{ ...S.btn, ...S.btnGhost }}>Excel'e aktar (CSV)</button>
         </div>
@@ -666,21 +843,6 @@ function Report({ zones, staff, cleanLogs, wasteLogs, incidents }) {
           </tbody>
         </table>
       </div>
-
-      {byDest.length > 0 && (
-        <div style={S.card}>
-          <div style={S.h2}>Hedefe göre atık dağılımı</div>
-          <ResponsiveContainer width="100%" height={Math.max(140, byDest.length * 52)}>
-            <BarChart data={byDest} layout="vertical" margin={{ left: 40 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
-              <XAxis type="number" tick={{ fontSize: 11, fill: T.sub }} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 11.5, fill: T.ink }} width={140} />
-              <Tooltip contentStyle={S.tooltip} formatter={v => [`${v} kg`]} />
-              <Bar dataKey="value" fill={T.green} radius={[0, 6, 6, 0]} barSize={26} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
     </div>
   );
 }
