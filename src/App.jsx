@@ -6,15 +6,17 @@ import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, uploadPh
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
 
-const ZONES = [
-  { id: "Z01", name: "Ana Konferans Salonu", area: "4.200 m²" },
-  { id: "Z02", name: "Sergi Alanı A", area: "2.800 m²" },
-  { id: "Z03", name: "Sergi Alanı B", area: "2.400 m²" },
-  { id: "Z04", name: "Yemek Alanı", area: "1.600 m²" },
-  { id: "Z05", name: "Medya Merkezi", area: "1.200 m²" },
-  { id: "Z06", name: "VIP Lounge", area: "800 m²" },
-  { id: "Z07", name: "Dış Alan / Bahçe", area: "5.000 m²" },
-  { id: "Z08", name: "Otopark & Transfer", area: "3.500 m²" },
+/* Bölgeler artık veritabanından gelir. Aşağıdaki liste yalnızca
+   Supabase'e henüz zones tablosu eklenmemişse (yerel mod) yedektir. */
+const FALLBACK_ZONES = [
+  { code: "Z01", name: "Ana Konferans Salonu", area: "4.200 m²" },
+  { code: "Z02", name: "Sergi Alanı A", area: "2.800 m²" },
+  { code: "Z03", name: "Sergi Alanı B", area: "2.400 m²" },
+  { code: "Z04", name: "Yemek Alanı", area: "1.600 m²" },
+  { code: "Z05", name: "Medya Merkezi", area: "1.200 m²" },
+  { code: "Z06", name: "VIP Lounge", area: "800 m²" },
+  { code: "Z07", name: "Dış Alan / Bahçe", area: "5.000 m²" },
+  { code: "Z08", name: "Otopark & Transfer", area: "3.500 m²" },
 ];
 
 const WASTE_TYPES = [
@@ -137,12 +139,13 @@ function App({ user, logout }) {
   const [incidents, setIncidents] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [targets, setTargets] = useState([]);
+  const [zones, setZones] = useState([]);
   const [qrZone, setQrZone] = useState(null);
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t] = await Promise.all([
+    const [s, c, w, i, a, t, z] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
-      fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
+      fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"), fetchAll("zones"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -150,12 +153,19 @@ function App({ user, logout }) {
     setIncidents(i.filter(x => x.active !== false));
     setAssignments(a.filter(x => x.active !== false));
     setTargets(t);
+    // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
+    // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
+    const zActive = z.filter(x => x.active !== false);
+    const zNorm = zActive.length > 0
+      ? zActive.map(x => ({ ...x, dbId: x.id, id: x.code })).sort((a, b) => a.code.localeCompare(b.code))
+      : FALLBACK_ZONES.map(x => ({ ...x, id: x.code }));
+    setZones(zNorm);
   }, []);
 
   useEffect(() => {
     reload();
     const p = new URLSearchParams(window.location.search).get("zone");
-    if (p && ZONES.some(z => z.id === p)) { setQrZone(p); setTab("saha"); }
+    if (p) { setQrZone(p); setTab("saha"); }
     const iv = setInterval(reload, 30000); // 30 sn'de bir yenile (canlı görünüm)
     return () => clearInterval(iv);
   }, [reload]);
@@ -169,12 +179,13 @@ function App({ user, logout }) {
     { id: "rapor", label: "Rapor" },
     ...(user.is_admin ? [
       { id: "personel", label: "Personel" },
+      { id: "bolge", label: "Bölgeler" },
       { id: "qr", label: "QR kodlar" },
       { id: "hedef", label: "Hedefler" },
     ] : []),
   ];
 
-  const ctx = { user, staff, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg }}>
@@ -208,7 +219,8 @@ function App({ user, logout }) {
         {tab === "olay" && <Incidents {...ctx} />}
         {tab === "rapor" && <Report {...ctx} />}
         {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
-        {tab === "qr" && user.is_admin && <QRManager />}
+        {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
+        {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
         {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
       </main>
     </div>
@@ -216,7 +228,7 @@ function App({ user, logout }) {
 }
 
 /* ═══════════ GENEL DURUM ═══════════ */
-function Dashboard({ cleanLogs, wasteLogs, incidents, targets, assignments }) {
+function Dashboard({ zones = [], cleanLogs, wasteLogs, incidents, targets, assignments }) {
   const todayWaste = wasteLogs.filter(w => isToday(w.created_at));
   const totalWaste = wasteLogs.reduce((s, w) => s + Number(w.amount), 0);
   const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
@@ -254,7 +266,7 @@ function Dashboard({ cleanLogs, wasteLogs, incidents, targets, assignments }) {
           <div style={{ fontWeight: 700, color: T.red, fontSize: 14, marginBottom: 8 }}>⚠ Geciken temizlik görevleri</div>
           {delays.map(d => (
             <div key={d.id} style={{ fontSize: 13.5, color: T.ink, padding: "4px 0" }}>
-              <b>{ZONES.find(z => z.id === d.zone)?.name || d.zone}</b> — sorumlu: {d.staff_name} — son temizlikten bu yana{" "}
+              <b>{zones.find(z => z.id === d.zone)?.name || d.zone}</b> — sorumlu: {d.staff_name} — son temizlikten bu yana{" "}
               {d.hoursSince === Infinity ? "hiç kayıt yok" : `${d.hoursSince.toFixed(1)} saat geçti`} (hedef: {d.freq_hours} saat)
             </div>
           ))}
@@ -314,11 +326,11 @@ function Dashboard({ cleanLogs, wasteLogs, incidents, targets, assignments }) {
 }
 
 /* ═══════════ SAHA KAYDI ═══════════ */
-function FieldEntry({ user, cleanLogs, reload, qrZone }) {
+function FieldEntry({ user, zones = [], cleanLogs, reload, qrZone }) {
   const [zone, setZone] = useState(qrZone || "");
   const [notes, setNotes] = useState("");
   const [done, setDone] = useState(null);
-  const zoneObj = ZONES.find(z => z.id === zone);
+  const zoneObj = zones.find(z => z.id === zone);
 
   const log = async (action) => {
     if (!zone) return;
@@ -346,7 +358,7 @@ function FieldEntry({ user, cleanLogs, reload, qrZone }) {
             <label style={S.label}>Bölge</label>
             <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
               <option value="">Seçin</option>
-              {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+              {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
             </select>
           </>
         )}
@@ -382,7 +394,7 @@ function FieldEntry({ user, cleanLogs, reload, qrZone }) {
 }
 
 /* ═══════════ ATIK GİRİŞİ ═══════════ */
-function WasteEntry({ user, wasteLogs, reload }) {
+function WasteEntry({ user, zones = [], wasteLogs, reload }) {
   const [f, setF] = useState({ zone: "", type: "", amount: "", destination: "", facility_license: "", uatf_no: "", vehicle: "", km: "" });
   const [photo, setPhoto] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -416,7 +428,7 @@ function WasteEntry({ user, wasteLogs, reload }) {
         <label style={S.label}>Kaynak bölge</label>
         <select style={S.input} value={f.zone} onChange={e => set("zone", e.target.value)}>
           <option value="">Seçin</option>
-          {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
         </select>
 
         <label style={S.label}>Atık türü</label>
@@ -502,7 +514,7 @@ function WasteEntry({ user, wasteLogs, reload }) {
 }
 
 /* ═══════════ GÖREVLER (SLA) ═══════════ */
-function Assignments({ user, staff, assignments, cleanLogs, reload }) {
+function Assignments({ user, zones = [], staff, assignments, cleanLogs, reload }) {
   const [zone, setZone] = useState("");
   const [person, setPerson] = useState("");
   const [freq, setFreq] = useState("4");
@@ -523,7 +535,7 @@ function Assignments({ user, staff, assignments, cleanLogs, reload }) {
           <label style={S.label}>Bölge</label>
           <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
             <option value="">Seçin</option>
-            {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+            {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
           </select>
           <label style={S.label}>Sorumlu personel</label>
           <select style={S.input} value={person} onChange={e => setPerson(e.target.value)}>
@@ -549,7 +561,7 @@ function Assignments({ user, staff, assignments, cleanLogs, reload }) {
               return (
                 <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: `1px solid ${T.line}`, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 160 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{ZONES.find(z => z.id === a.zone)?.name || a.zone}</div>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{zones.find(z => z.id === a.zone)?.name || a.zone}</div>
                     <div style={{ fontSize: 12.5, color: T.sub }}>{a.staff_name} · her {a.freq_hours} saatte</div>
                   </div>
                   <span style={S.tag(late ? T.redSoft : T.greenSoft, late ? T.red : T.green)}>
@@ -570,7 +582,7 @@ function Assignments({ user, staff, assignments, cleanLogs, reload }) {
 }
 
 /* ═══════════ OLAYLAR ═══════════ */
-function Incidents({ user, incidents, reload }) {
+function Incidents({ user, zones = [], incidents, reload }) {
   const [zone, setZone] = useState("");
   const [severity, setSeverity] = useState("low");
   const [desc, setDesc] = useState("");
@@ -594,7 +606,7 @@ function Incidents({ user, incidents, reload }) {
         <label style={S.label}>Bölge</label>
         <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
           <option value="">Seçin</option>
-          {ZONES.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
         </select>
         <label style={S.label}>Önem</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -717,7 +729,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
 }
 
 /* ═══════════ QR ═══════════ */
-function QRManager() {
+function QRManager({ zones = [] }) {
   return (
     <div>
       <div style={S.card}>
@@ -725,24 +737,106 @@ function QRManager() {
           <div style={{ flex: 1, minWidth: 260 }}>
             <div style={S.h2}>Bölge QR kodları</div>
             <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.65 }}>
-              Yazdırıp alan girişlerine asın. Personel telefonla okuttuğunda sistem o bölge seçili açılır;
-              kendi PIN'i ile giriş yaptığı için kayıt otomatik olarak onun adına oluşur.
+              Her bölge için otomatik QR kod üretilir. Yazdırıp alan girişlerine asın. Personel telefonla
+              okuttuğunda sistem o bölge seçili açılır; kendi PIN'i ile giriş yaptığı için kayıt otomatik onun adına oluşur.
+              Yeni bölge eklemek için <b>Bölgeler</b> sekmesini kullanın — QR kod anında burada görünür.
             </div>
           </div>
-          <button onClick={() => window.print()} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>Tümünü yazdır</button>
+          {zones.length > 0 && <button onClick={() => window.print()} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>Tümünü yazdır</button>}
         </div>
       </div>
-      <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
-        {ZONES.map(z => (
-          <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
-            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
-            <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id} · {z.area}</div>
-            <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
-              <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
+      {zones.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", padding: 40, color: T.faint }}>
+          Henüz bölge yok. <b>Bölgeler</b> sekmesinden bölge ekleyin, QR kodlar otomatik oluşsun.
+        </div>
+      ) : (
+        <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
+          {zones.map(z => (
+            <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
+              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
+              <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id}{z.area ? ` · ${z.area}` : ""}</div>
+              <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
+                <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
+              </div>
+              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
             </div>
-            <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════ BÖLGE YÖNETİMİ (yalnız yönetici) ═══════════ */
+function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
+  const [name, setName] = useState("");
+  const [area, setArea] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Sıradaki bölge kodunu otomatik üret: Z01, Z02 …
+  const nextCode = useMemo(() => {
+    const nums = zones.map(z => parseInt(String(z.code || "").replace(/\D/g, ""), 10)).filter(n => !isNaN(n));
+    const max = nums.length ? Math.max(...nums) : 0;
+    return "Z" + String(max + 1).padStart(2, "0");
+  }, [zones]);
+
+  const add = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    await insertRow("zones", { code: nextCode, name: name.trim(), area: area.trim() || null }, user.name);
+    setName(""); setArea(""); setBusy(false); reload();
+  };
+
+  const remove = async (z) => {
+    const used = cleanLogs.some(c => c.zone === z.id) || wasteLogs.some(w => w.zone === z.id);
+    const msg = used
+      ? `"${z.name}" bölgesinde kayıtlar var. Bölge pasifleştirilecek (kayıtlar korunur, listelerden kalkar). Devam edilsin mi?`
+      : `"${z.name}" bölgesi kaldırılsın mı?`;
+    if (!window.confirm(msg)) return;
+    await deactivateRow("zones", z.dbId || z.id, user.name);
+    reload();
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Yeni bölge ekle</div>
+        <div style={S.sub}>Kod otomatik atanır ({nextCode}). Eklediğiniz an QR kodu oluşur.</div>
+        <label style={S.label}>Bölge adı</label>
+        <input style={S.input} placeholder="Örn: B2 Sergi Holü" value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && add()} />
+        <label style={S.label}>Alan / m² (isteğe bağlı)</label>
+        <input style={S.input} placeholder="Örn: 1.500 m²" value={area} onChange={e => setArea(e.target.value)} />
+        <button onClick={add} disabled={!name.trim() || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!name.trim() || busy) ? 0.4 : 1 }}>
+          {busy ? "Ekleniyor…" : `Bölge ekle (${nextCode})`}
+        </button>
+        {!isOnline && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 12 }}>
+            Yerel modda bölgeler kalıcı kaydedilmez. Merkezi mod için schema_zones.sql çalıştırılmalı.
           </div>
-        ))}
+        )}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Bölgeler ({zones.length})</div>
+        {zones.length === 0 ? (
+          <div style={{ padding: "30px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz bölge yok.</div>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            {zones.map(z => (
+              <div key={z.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
+                <div style={{ background: "#fff", padding: 5, borderRadius: 8, border: `1px solid ${T.line}`, flexShrink: 0 }}>
+                  <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={44} level="M" fgColor={T.ink} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{z.name}</div>
+                  <div style={{ fontSize: 12.5, color: T.sub }}>{z.code}{z.area ? ` · ${z.area}` : ""}</div>
+                </div>
+                <button onClick={() => remove(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
