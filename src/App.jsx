@@ -1,10 +1,15 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
-import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, uploadPhoto, carbonOf, EMISSION } from "./supa.js";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, carbonOf, EMISSION } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
+
+/* DENEME MODU: true iken yöneticiye "kalıcı sil" ve "tüm deneme verisini
+   temizle" düğmeleri görünür. Canlıya geçerken bunu false yapın —
+   böylece kayıtlar yalnız pasifleştirilebilir (denetim izi korunur). */
+const DENEME_MODU = true;
 
 /* Bölgeler artık veritabanından gelir. Aşağıdaki liste yalnızca
    Supabase'e henüz zones tablosu eklenmemişse (yerel mod) yedektir. */
@@ -170,22 +175,44 @@ function App({ user, logout }) {
     return () => clearInterval(iv);
   }, [reload]);
 
+  /* ── ROL BAZLI EKRANLAR ──
+     Her personel yalnız kendi işine ait sekmeleri görür.
+     Yönetici (is_admin) her şeyi görür. */
+  const ALL_TABS = {
+    dashboard: { id: "dashboard", label: "Genel durum" },
+    saha:      { id: "saha", label: "Saha kaydı" },
+    atik:      { id: "atik", label: "Atık girişi" },
+    gorev:     { id: "gorev", label: "Görevler" },
+    olay:      { id: "olay", label: "Olaylar" },
+    rapor:     { id: "rapor", label: "Rapor" },
+    personel:  { id: "personel", label: "Personel" },
+    bolge:     { id: "bolge", label: "Bölgeler" },
+    qr:        { id: "qr", label: "QR kodlar" },
+    hedef:     { id: "hedef", label: "Hedefler" },
+  };
+
+  const ROLE_TABS = {
+    "Temizlik":       ["saha"],                          // sadece giriş/çıkış
+    "Atık Toplama":   ["atik"],                          // sadece atık girişi
+    "Araç Sürücü":    ["atik"],                          // taşıma → atık girişi
+    "Denetim":        ["dashboard", "olay", "gorev", "rapor"],
+    "Saha Sorumlusu": ["dashboard", "saha", "atik", "gorev", "olay", "rapor"],
+  };
+
+  const allowed = user.is_admin
+    ? Object.keys(ALL_TABS)                              // yönetici: hepsi
+    : (ROLE_TABS[user.role] || ["saha"]);                // tanımsız rol → en azından saha
+
   const NAV = [
-    { id: "dashboard", label: "Genel durum" },
-    { id: "saha", label: "Saha kaydı" },
-    { id: "atik", label: "Atık girişi" },
-    { id: "gorev", label: "Görevler" },
-    { id: "olay", label: "Olaylar" },
-    { id: "rapor", label: "Rapor" },
-    ...(user.is_admin ? [
-      { id: "personel", label: "Personel" },
-      { id: "bolge", label: "Bölgeler" },
-      { id: "qr", label: "QR kodlar" },
-      { id: "hedef", label: "Hedefler" },
-    ] : []),
+    ...allowed.filter(k => ALL_TABS[k]).map(k => ALL_TABS[k]),
   ];
 
   const ctx = { user, staff, zones, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+
+  // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
+  useEffect(() => {
+    if (!allowed.includes(tab)) setTab(allowed[0] || "saha");
+  }, [tab, user.role, user.is_admin]); // eslint-disable-line
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, display: "flex" }}>
@@ -222,16 +249,18 @@ function App({ user, logout }) {
 
       {/* İÇERİK */}
       <main style={{ flex: 1, minWidth: 0, maxWidth: 1000, margin: "0 auto", padding: "26px 20px 60px" }}>
-        {tab === "dashboard" && <Dashboard {...ctx} />}
-        {tab === "saha" && <FieldEntry {...ctx} />}
-        {tab === "atik" && <WasteEntry {...ctx} />}
-        {tab === "gorev" && <Assignments {...ctx} />}
-        {tab === "olay" && <Incidents {...ctx} />}
-        {tab === "rapor" && <Report {...ctx} />}
-        {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
-        {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
-        {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
-        {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
+        {allowed.includes(tab) && (<>
+          {tab === "dashboard" && <Dashboard {...ctx} />}
+          {tab === "saha" && <FieldEntry {...ctx} />}
+          {tab === "atik" && <WasteEntry {...ctx} />}
+          {tab === "gorev" && <Assignments {...ctx} />}
+          {tab === "olay" && <Incidents {...ctx} />}
+          {tab === "rapor" && <Report {...ctx} />}
+          {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
+          {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
+          {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
+          {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
+        </>)}
       </main>
     </div>
   );
@@ -769,6 +798,10 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                       <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
                         style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Pasifleştir</button>
                     )}
+                    {DENEME_MODU && s.id !== user.id && (
+                      <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${s.name}" KALICI olarak silinsin mi? Bu geri alınamaz.`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
+                        style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
+                    )}
                   </div>
                 </div>
               )}
@@ -776,6 +809,30 @@ function Personnel({ user, staff, cleanLogs, reload }) {
           ))}
         </div>
       </div>
+
+      {DENEME_MODU && (
+        <div style={{ ...S.card, gridColumn: "1 / -1", background: T.redSoft, borderColor: "#e5b8b8" }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 4 }}>Deneme verisini temizle</div>
+          <div style={{ fontSize: 13, color: "#7a2020", marginBottom: 14, lineHeight: 1.6 }}>
+            Tüm temizlik, atık, olay, görev ve bölge kayıtlarını ve <b>kendiniz hariç</b> personeli KALICI olarak siler.
+            Canlıya geçmeden önce sistemi sıfırlamak için kullanın. Bu işlem geri alınamaz.
+          </div>
+          <button onClick={async () => {
+            if (!window.confirm("TÜM deneme verisi kalıcı silinecek (kendiniz hariç). Emin misiniz?")) return;
+            if (!window.confirm("Son onay: bu işlem GERİ ALINAMAZ. Devam?")) return;
+            for (const tbl of ["clean_logs", "waste_logs", "incidents", "assignments", "zones"]) {
+              const rows = await fetchAll(tbl);
+              for (const r of rows) await hardDeleteRow(tbl, r.id, user.name);
+            }
+            const people = await fetchAll("staff");
+            for (const p of people) if (p.id !== user.id) await hardDeleteRow("staff", p.id, user.name);
+            alert("Deneme verisi temizlendi.");
+            reload();
+          }} style={{ ...S.btn, background: T.red, color: "#fff" }}>
+            Tüm deneme verisini sil
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -913,6 +970,10 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
                   <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                     <button onClick={() => startEdit(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
                     <button onClick={() => remove(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
+                    {DENEME_MODU && (
+                      <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${z.name}" bölgesi KALICI silinsin mi? Geri alınamaz.`)) { await hardDeleteRow("zones", z.dbId || z.id, user.name); reload(); } }}
+                        style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
+                    )}
                   </div>
                 )}
               </div>

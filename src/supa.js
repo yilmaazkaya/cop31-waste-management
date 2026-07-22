@@ -52,6 +52,20 @@ export async function deactivateRow(table, id, user) {
   return updateRow(table, id, { active: false }, user);
 }
 
+/* KALICI SİLME — yalnız deneme aşaması için. Canlıya geçişte
+   uygulamadan kaldırılır (denetim izi ilkesi gereği). */
+export async function hardDeleteRow(table, id, user) {
+  if (!supa) {
+    const all = lsGet("cop31_" + table).filter(r => r.id !== id);
+    lsSet("cop31_" + table, all);
+    return true;
+  }
+  const { error } = await supa.from(table).delete().eq("id", id);
+  if (error) { console.error(table, error); alert("Silme hatası: " + error.message); return false; }
+  await audit(user, "KALICI_SİL", table, id, {});
+  return true;
+}
+
 async function audit(user, action, table, recordId, detail) {
   if (!supa) return;
   await supa.from("audit_log").insert({
