@@ -188,30 +188,40 @@ function App({ user, logout }) {
   const ctx = { user, staff, zones, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg }}>
-      <header style={{ background: T.surface, borderBottom: `1px solid ${T.line}`, padding: "0 20px", position: "sticky", top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", alignItems: "center", gap: 14, height: 62 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 13 }}>31</div>
-            <div>
-              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 14.5, color: T.ink, lineHeight: 1.15 }}>COP31 Atık Yönetimi</div>
-              <div style={{ fontSize: 11, color: T.faint }}>{isOnline ? "● Merkezi sistem" : "○ Yerel mod"} · {user.name}</div>
-            </div>
+    <div style={{ minHeight: "100vh", background: T.bg, display: "flex" }}>
+      {/* SOL KENAR ÇUBUĞU */}
+      <aside style={{
+        width: 220, background: T.surface, borderRight: `1px solid ${T.line}`,
+        display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", flexShrink: 0,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 13, flexShrink: 0 }}>31</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13.5, color: T.ink, lineHeight: 1.15 }}>COP31 Atık</div>
+            <div style={{ fontSize: 10.5, color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isOnline ? "● Merkezi" : "○ Yerel"} · {user.name}</div>
           </div>
-          <nav style={{ display: "flex", gap: 2, overflowX: "auto", marginLeft: "auto" }}>
-            {NAV.map(n => (
-              <button key={n.id} onClick={() => setTab(n.id)} style={{
-                ...S.btn, padding: "9px 13px", fontSize: 13, whiteSpace: "nowrap",
-                background: tab === n.id ? T.greenSoft : "transparent",
-                color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
-              }}>{n.label}</button>
-            ))}
-            <button onClick={logout} title="Oturumu kapat" style={{ ...S.btn, padding: "9px 13px", fontSize: 13, background: "transparent", color: T.faint }}>Çıkış</button>
-          </nav>
         </div>
-      </header>
 
-      <main style={{ maxWidth: 1100, margin: "0 auto", padding: "26px 20px 60px" }}>
+        <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: 10, overflowY: "auto", flex: 1 }}>
+          {NAV.map(n => (
+            <button key={n.id} onClick={() => setTab(n.id)} style={{
+              ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left",
+              background: tab === n.id ? T.greenSoft : "transparent",
+              color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
+            }}>{n.label}</button>
+          ))}
+        </nav>
+
+        <div style={{ padding: 10, borderTop: `1px solid ${T.line}` }}>
+          <button onClick={logout} title="Oturumu kapat" style={{
+            ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left", width: "100%",
+            background: "transparent", color: T.faint,
+          }}>← Çıkış</button>
+        </div>
+      </aside>
+
+      {/* İÇERİK */}
+      <main style={{ flex: 1, minWidth: 0, maxWidth: 1000, margin: "0 auto", padding: "26px 20px 60px" }}>
         {tab === "dashboard" && <Dashboard {...ctx} />}
         {tab === "saha" && <FieldEntry {...ctx} />}
         {tab === "atik" && <WasteEntry {...ctx} />}
@@ -657,12 +667,23 @@ function Incidents({ user, zones = [], incidents, reload }) {
 function Personnel({ user, staff, cleanLogs, reload }) {
   const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [editId, setEditId] = useState(null);
+  const [e_, setE_] = useState({});
+  const setE = (k, v) => setE_(p => ({ ...p, [k]: v }));
 
   const add = async () => {
     if (!f.name.trim() || f.pin.length !== 4) return;
     await insertRow("staff", { ...f, name: f.name.trim() }, user.name);
     setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
     reload();
+  };
+
+  const startEdit = (s) => { setEditId(s.id); setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", pin: s.pin || "", is_admin: !!s.is_admin }); };
+  const cancelEdit = () => { setEditId(null); setE_({}); };
+  const saveEdit = async (s) => {
+    if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
+    await updateRow("staff", s.id, { name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null, pin: e_.pin, is_admin: e_.is_admin }, user.name);
+    cancelEdit(); reload();
   };
 
   return (
@@ -702,23 +723,54 @@ function Personnel({ user, staff, cleanLogs, reload }) {
         <div style={S.h2}>Ekip ({staff.length})</div>
         <div style={{ marginTop: 10 }}>
           {staff.map(s => (
-            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
-                {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
-                <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
-              </div>
-              <div style={{ textAlign: "center", flexShrink: 0 }}>
-                <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>
-                  {cleanLogs.filter(c => c.staff_id === s.id).length}
+            <div key={s.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
+              {editId === s.id ? (
+                <div>
+                  <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.name} onChange={ev => setE("name", ev.target.value)} placeholder="Ad Soyad" autoFocus />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.role} onChange={ev => setE("role", ev.target.value)}>
+                      {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.shift} onChange={ev => setE("shift", ev.target.value)}>
+                      {SHIFTS.map(x => <option key={x} value={x}>{x}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.phone} onChange={ev => setE("phone", ev.target.value)} placeholder="Telefon" />
+                    <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} maxLength={4} inputMode="numeric" value={e_.pin} onChange={ev => setE("pin", ev.target.value.replace(/\D/g, ""))} placeholder="PIN (4 hane)" />
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.sub, marginBottom: 10, cursor: "pointer" }}>
+                    <input type="checkbox" checked={e_.is_admin} onChange={ev => setE("is_admin", ev.target.checked)} />
+                    Yönetici yetkisi
+                  </label>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => saveEdit(s)} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGreen }}>Kaydet</button>
+                    <button onClick={cancelEdit} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGhost }}>İptal</button>
+                  </div>
                 </div>
-                <div style={{ fontSize: 10.5, color: T.faint }}>kayıt</div>
-              </div>
-              {s.id !== user.id && (
-                <button onClick={async () => { await deactivateRow("staff", s.id, user.name); reload(); }}
-                  style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Pasifleştir</button>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
+                    {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
+                    <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
+                  </div>
+                  <div style={{ textAlign: "center", flexShrink: 0 }}>
+                    <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>
+                      {cleanLogs.filter(c => c.staff_id === s.id).length}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: T.faint }}>kayıt</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button onClick={() => startEdit(s)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                    {s.id !== user.id && (
+                      <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
+                        style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Pasifleştir</button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -772,6 +824,9 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
   const [name, setName] = useState("");
   const [area, setArea] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editArea, setEditArea] = useState("");
 
   // Sıradaki bölge kodunu otomatik üret: Z01, Z02 …
   const nextCode = useMemo(() => {
@@ -785,6 +840,14 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
     setBusy(true);
     await insertRow("zones", { code: nextCode, name: name.trim(), area: area.trim() || null }, user.name);
     setName(""); setArea(""); setBusy(false); reload();
+  };
+
+  const startEdit = (z) => { setEditId(z.id); setEditName(z.name); setEditArea(z.area || ""); };
+  const cancelEdit = () => { setEditId(null); setEditName(""); setEditArea(""); };
+  const saveEdit = async (z) => {
+    if (!editName.trim()) return;
+    await updateRow("zones", z.dbId || z.id, { name: editName.trim(), area: editArea.trim() || null }, user.name);
+    cancelEdit(); reload();
   };
 
   const remove = async (z) => {
@@ -828,11 +891,30 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
                 <div style={{ background: "#fff", padding: 5, borderRadius: 8, border: `1px solid ${T.line}`, flexShrink: 0 }}>
                   <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={44} level="M" fgColor={T.ink} />
                 </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{z.name}</div>
-                  <div style={{ fontSize: 12.5, color: T.sub }}>{z.code}{z.area ? ` · ${z.area}` : ""}</div>
-                </div>
-                <button onClick={() => remove(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
+                {editId === z.id ? (
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <input style={{ ...S.input, marginBottom: 6, padding: "7px 10px" }} value={editName} onChange={e => setEditName(e.target.value)}
+                      placeholder="Bölge adı" onKeyDown={e => e.key === "Enter" && saveEdit(z)} autoFocus />
+                    <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} value={editArea} onChange={e => setEditArea(e.target.value)}
+                      placeholder="Alan / m²" onKeyDown={e => e.key === "Enter" && saveEdit(z)} />
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{z.name}</div>
+                    <div style={{ fontSize: 12.5, color: T.sub }}>{z.code}{z.area ? ` · ${z.area}` : ""}</div>
+                  </div>
+                )}
+                {editId === z.id ? (
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button onClick={() => saveEdit(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+                    <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button onClick={() => startEdit(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                    <button onClick={() => remove(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
