@@ -39,6 +39,42 @@ const DESTINATIONS = ["Geri Dönüşüm Tesisi", "Kompost Alanı", "Düzenli Dep
 const ROLES = ["Temizlik", "Atık Toplama", "Denetim", "Araç Sürücü", "Saha Sorumlusu"];
 const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
 
+/* ── EKRANLAR ve YETKİ ──
+   ALL_TABS: sistemdeki tüm ekranlar.
+   ROLE_TABS: rol seçilince önerilen varsayılan ekranlar.
+   Kişiye özel seçim yapılırsa (staff.permissions) o geçerli olur. */
+const ALL_TABS = [
+  { id: "dashboard", label: "Genel durum", desc: "Özet, grafikler, uyarılar" },
+  { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
+  { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
+  { id: "gorev",     label: "Görevler",    desc: "Bölge sorumlulukları, SLA" },
+  { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
+  { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
+  { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
+  { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
+  { id: "qr",        label: "QR kodlar",   desc: "QR üret ve yazdır", admin: true },
+  { id: "hedef",     label: "Hedefler",    desc: "ISO 20121 hedefleri", admin: true },
+];
+
+const ROLE_TABS = {
+  "Temizlik":       ["saha"],
+  "Atık Toplama":   ["atik"],
+  "Araç Sürücü":    ["atik"],
+  "Denetim":        ["dashboard", "olay", "gorev", "rapor"],
+  "Saha Sorumlusu": ["dashboard", "saha", "atik", "gorev", "olay", "rapor"],
+};
+
+/* Bir kullanıcının görebileceği ekranları hesaplar. */
+function allowedTabsFor(user) {
+  if (user.is_admin) return ALL_TABS.map(t => t.id);
+  let custom = null;
+  try { custom = user.permissions ? JSON.parse(user.permissions) : null; } catch { custom = null; }
+  const list = (Array.isArray(custom) && custom.length > 0) ? custom : (ROLE_TABS[user.role] || ["saha"]);
+  // Yönetici ekranları kişiye özel seçimle bile açılamaz
+  const adminOnly = ALL_TABS.filter(t => t.admin).map(t => t.id);
+  return list.filter(id => !adminOnly.includes(id));
+}
+
 const trDate = (iso) => new Date(iso).toLocaleDateString("tr-TR");
 const trTime = (iso) => new Date(iso).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
 const isToday = (iso) => trDate(iso) === new Date().toLocaleDateString("tr-TR");
@@ -89,7 +125,7 @@ function Login({ onLogin }) {
     const u = staffList.find(s => s.id === sel);
     if (!u) return setErr("Personel seçin.");
     if ((u.pin || "0000") !== pin) return setErr("PIN hatalı.");
-    onLogin({ id: u.id, name: u.name, role: u.role, is_admin: !!u.is_admin });
+    onLogin({ id: u.id, name: u.name, role: u.role, is_admin: !!u.is_admin, permissions: u.permissions || null });
   };
 
   return (
@@ -175,37 +211,10 @@ function App({ user, logout }) {
     return () => clearInterval(iv);
   }, [reload]);
 
-  /* ── ROL BAZLI EKRANLAR ──
-     Her personel yalnız kendi işine ait sekmeleri görür.
-     Yönetici (is_admin) her şeyi görür. */
-  const ALL_TABS = {
-    dashboard: { id: "dashboard", label: "Genel durum" },
-    saha:      { id: "saha", label: "Saha kaydı" },
-    atik:      { id: "atik", label: "Atık girişi" },
-    gorev:     { id: "gorev", label: "Görevler" },
-    olay:      { id: "olay", label: "Olaylar" },
-    rapor:     { id: "rapor", label: "Rapor" },
-    personel:  { id: "personel", label: "Personel" },
-    bolge:     { id: "bolge", label: "Bölgeler" },
-    qr:        { id: "qr", label: "QR kodlar" },
-    hedef:     { id: "hedef", label: "Hedefler" },
-  };
-
-  const ROLE_TABS = {
-    "Temizlik":       ["saha"],                          // sadece giriş/çıkış
-    "Atık Toplama":   ["atik"],                          // sadece atık girişi
-    "Araç Sürücü":    ["atik"],                          // taşıma → atık girişi
-    "Denetim":        ["dashboard", "olay", "gorev", "rapor"],
-    "Saha Sorumlusu": ["dashboard", "saha", "atik", "gorev", "olay", "rapor"],
-  };
-
-  const allowed = user.is_admin
-    ? Object.keys(ALL_TABS)                              // yönetici: hepsi
-    : (ROLE_TABS[user.role] || ["saha"]);                // tanımsız rol → en azından saha
-
-  const NAV = [
-    ...allowed.filter(k => ALL_TABS[k]).map(k => ALL_TABS[k]),
-  ];
+  /* Kullanıcının görebileceği ekranlar: kişiye özel seçim varsa o,
+     yoksa rolün varsayılanı. Yönetici hepsini görür. */
+  const allowed = allowedTabsFor(user);
+  const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
   const ctx = { user, staff, zones, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
@@ -694,7 +703,7 @@ function Incidents({ user, zones = [], incidents, reload }) {
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
 function Personnel({ user, staff, cleanLogs, reload }) {
-  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
+  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [editId, setEditId] = useState(null);
   const [e_, setE_] = useState({});
@@ -702,18 +711,70 @@ function Personnel({ user, staff, cleanLogs, reload }) {
 
   const add = async () => {
     if (!f.name.trim() || f.pin.length !== 4) return;
-    await insertRow("staff", { ...f, name: f.name.trim() }, user.name);
-    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false });
+    const { perms, ...rest } = f;
+    await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
+    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
     reload();
   };
 
-  const startEdit = (s) => { setEditId(s.id); setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", pin: s.pin || "", is_admin: !!s.is_admin }); };
+  const startEdit = (s) => {
+    let perms = [];
+    try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
+    if (!perms.length) perms = ROLE_TABS[s.role] || [];
+    setEditId(s.id);
+    setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
+  };
   const cancelEdit = () => { setEditId(null); setE_({}); };
   const saveEdit = async (s) => {
     if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
-    await updateRow("staff", s.id, { name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null, pin: e_.pin, is_admin: e_.is_admin }, user.name);
+    await updateRow("staff", s.id, {
+      name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null,
+      pin: e_.pin, is_admin: e_.is_admin, permissions: JSON.stringify(e_.perms || []),
+    }, user.name);
     cancelEdit(); reload();
   };
+
+  /* Rol değişince önerilen ekranları otomatik işaretle (kullanıcı sonra değiştirebilir) */
+  const roleChanged = (which, newRole) => {
+    const suggested = ROLE_TABS[newRole] || [];
+    if (which === "new") setF(p => ({ ...p, role: newRole, perms: suggested }));
+    else setE_(p => ({ ...p, role: newRole, perms: suggested }));
+  };
+
+  const togglePerm = (which, id) => {
+    const cur = which === "new" ? (f.perms || []) : (e_.perms || []);
+    const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
+    if (which === "new") setF(p => ({ ...p, perms: next }));
+    else setE_(p => ({ ...p, perms: next }));
+  };
+
+  /* Ekran seçim kutuları (yönetici işaretliyse gizlenir — o zaten her şeyi görür) */
+  const PermPicker = ({ which, isAdmin, perms }) => isAdmin ? (
+    <div style={{ fontSize: 12.5, color: T.blue, background: T.blueSoft, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+      Yönetici tüm ekranları görür — ayrı seçim gerekmez.
+    </div>
+  ) : (
+    <div style={{ marginBottom: 12 }}>
+      <label style={S.label}>Göreceği ekranlar</label>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 6 }}>
+        {ALL_TABS.filter(t => !t.admin).map(t => {
+          const on = (perms || []).includes(t.id);
+          return (
+            <button key={t.id} type="button" onClick={() => togglePerm(which, t.id)} title={t.desc} style={{
+              ...S.btn, padding: "8px 10px", fontSize: 12.5, textAlign: "left",
+              background: on ? T.greenSoft : "#fbfcfb",
+              color: on ? T.green : T.sub,
+              border: `1.5px solid ${on ? T.green : T.line}`,
+              fontWeight: on ? 700 : 500,
+            }}>{on ? "✓ " : ""}{t.label}</button>
+          );
+        })}
+      </div>
+      {(perms || []).length === 0 && (
+        <div style={{ fontSize: 12, color: T.amber, marginTop: 6 }}>En az bir ekran seçin.</div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
@@ -723,7 +784,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
         <label style={S.label}>Ad Soyad</label>
         <input style={S.input} placeholder="Ayşe Yılmaz" value={f.name} onChange={e => set("name", e.target.value)} />
         <label style={S.label}>Görev</label>
-        <select style={S.input} value={f.role} onChange={e => set("role", e.target.value)}>
+        <select style={S.input} value={f.role} onChange={e => roleChanged("new", e.target.value)}>
           {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
         <label style={S.label}>Vardiya</label>
@@ -742,10 +803,11 @@ function Personnel({ user, staff, cleanLogs, reload }) {
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: T.sub, marginBottom: 14, cursor: "pointer" }}>
           <input type="checkbox" checked={f.is_admin} onChange={e => set("is_admin", e.target.checked)} />
-          Yönetici yetkisi (personel/QR/hedef ekranlarını görür)
+          Yönetici yetkisi (tüm ekranları görür)
         </label>
-        <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4}
-          style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.name.trim() || f.pin.length !== 4) ? 0.4 : 1 }}>Ekle</button>
+        <PermPicker which="new" isAdmin={f.is_admin} perms={f.perms} />
+        <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)}
+          style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>Ekle</button>
       </div>
 
       <div style={S.card}>
@@ -757,7 +819,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                 <div>
                   <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.name} onChange={ev => setE("name", ev.target.value)} placeholder="Ad Soyad" autoFocus />
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.role} onChange={ev => setE("role", ev.target.value)}>
+                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.role} onChange={ev => roleChanged("edit", ev.target.value)}>
                       {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                     </select>
                     <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.shift} onChange={ev => setE("shift", ev.target.value)}>
@@ -772,6 +834,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                     <input type="checkbox" checked={e_.is_admin} onChange={ev => setE("is_admin", ev.target.checked)} />
                     Yönetici yetkisi
                   </label>
+                  <PermPicker which="edit" isAdmin={e_.is_admin} perms={e_.perms} />
                   <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => saveEdit(s)} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGreen }}>Kaydet</button>
                     <button onClick={cancelEdit} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGhost }}>İptal</button>
@@ -785,6 +848,9 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
                     <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
+                    <div style={{ fontSize: 11.5, color: T.faint, marginTop: 2 }}>
+                      Ekranlar: {s.is_admin ? "Tümü" : allowedTabsFor(s).map(id => ALL_TABS.find(t => t.id === id)?.label).filter(Boolean).join(", ") || "—"}
+                    </div>
                   </div>
                   <div style={{ textAlign: "center", flexShrink: 0 }}>
                     <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>
