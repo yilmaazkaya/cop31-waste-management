@@ -280,7 +280,7 @@ function App({ user, logout }) {
       </aside>
 
       {/* İÇERİK */}
-      <main style={{ flex: 1, minWidth: 0, maxWidth: 1000, margin: "0 auto", padding: "26px 20px 60px" }}>
+      <main style={{ flex: 1, minWidth: 0, maxWidth: 1500, margin: "0 auto", width: "100%", padding: "26px 24px 60px" }}>
         {allowed.includes(tab) && (<>
           {tab === "dashboard" && <Dashboard {...ctx} />}
           {tab === "istakip" && <TaskManager {...ctx} />}
@@ -1001,11 +1001,11 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
               <div style={{ padding: 40, textAlign: "center", color: T.faint, fontSize: 13.5 }}>Kayıt bulunamadı.</div>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <table style={{ width: "100%", minWidth: 860, borderCollapse: "collapse", fontSize: 13, tableLayout: "auto" }}>
                   <thead>
                     <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
-                      {["Personel", "Görev", "Departman", "Vardiya", "Ekran", "Kayıt", ""].map((h, i) => (
-                        <th key={h + i} style={{ padding: "11px 12px", textAlign: i === 0 ? "left" : i >= 4 ? "center" : "left", color: T.sub, fontWeight: 600, fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap" }}>{h}</th>
+                      {["Personel", "Görev", "Departman", "Vardiya", "Ekran", "Kayıt", "İşlem"].map((h, i) => (
+                        <th key={h + i} style={{ padding: "11px 12px", textAlign: i === 0 ? "left" : i === 6 ? "right" : i >= 4 ? "center" : "left", color: T.sub, fontWeight: 600, fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap", width: i === 6 ? 230 : i === 4 || i === 5 ? 90 : "auto" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -1095,26 +1095,6 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
             )}
           </div>
 
-          {DENEME_MODU && (
-            <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8", marginTop: 16 }}>
-              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 4 }}>Deneme verisini temizle</div>
-              <div style={{ fontSize: 13, color: "#7a2020", marginBottom: 14, lineHeight: 1.6 }}>
-                Tüm temizlik, atık, olay, görev ve bölge kayıtlarını ve <b>kendiniz hariç</b> personeli KALICI siler. Geri alınamaz.
-              </div>
-              <button onClick={async () => {
-                if (!window.confirm("TÜM deneme verisi kalıcı silinecek (kendiniz hariç). Emin misiniz?")) return;
-                if (!window.confirm("Son onay: bu işlem GERİ ALINAMAZ. Devam?")) return;
-                for (const tbl of ["clean_logs", "waste_logs", "incidents", "assignments", "zones", "tasks"]) {
-                  const rows = await fetchAll(tbl);
-                  for (const r of rows) await hardDeleteRow(tbl, r.id, user.name);
-                }
-                const people = await fetchAll("staff");
-                for (const p of people) if (p.id !== user.id) await hardDeleteRow("staff", p.id, user.name);
-                alert("Deneme verisi temizlendi.");
-                reload();
-              }} style={{ ...S.btn, background: T.red, color: "#fff" }}>Tüm deneme verisini sil</button>
-            </div>
-          )}
         </>
       )}
     </div>
