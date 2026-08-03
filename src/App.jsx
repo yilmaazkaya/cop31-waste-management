@@ -36,7 +36,9 @@ const WASTE_TYPES = [
 ];
 
 const DESTINATIONS = ["Geri Dönüşüm Tesisi", "Kompost Alanı", "Düzenli Depolama", "Tehlikeli Atık Deposu", "Geçici Depo"];
-const ROLES = ["Temizlik", "Atık Toplama", "Denetim", "Araç Sürücü", "Saha Sorumlusu"];
+/* Görevler artık veritabanından gelir (job_roles). Aşağıdaki liste
+   yalnızca tablo henüz kurulmadıysa (yerel mod) yedektir. */
+const FALLBACK_ROLES = ["Temizlik", "Atık Toplama", "Denetim", "Araç Sürücü", "Saha Sorumlusu"];
 const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
 
 /* ── EKRANLAR ve YETKİ ──
@@ -52,6 +54,7 @@ const ALL_TABS = [
   { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
+  { id: "unvan",     label: "Görev/Unvan", desc: "Personel görevlerini yönet", admin: true },
   { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
   { id: "qr",        label: "QR kodlar",   desc: "QR üret ve yazdır", admin: true },
   { id: "hedef",     label: "Hedefler",    desc: "ISO 20121 hedefleri", admin: true },
@@ -183,13 +186,14 @@ function App({ user, logout }) {
   const [targets, setTargets] = useState([]);
   const [zones, setZones] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [roles, setRoles] = useState([]);
   const [qrZone, setQrZone] = useState(null);
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z, tk] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk, jr] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
       fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
-      fetchAll("zones"), fetchAll("tasks"),
+      fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -198,6 +202,8 @@ function App({ user, logout }) {
     setAssignments(a.filter(x => x.active !== false));
     setTargets(t);
     setTasks(tk.filter(x => x.active !== false));
+    const jrActive = jr.filter(x => x.active !== false);
+    setRoles(jrActive.length > 0 ? jrActive : FALLBACK_ROLES.map(n => ({ name: n })));
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -220,7 +226,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, tasks, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, roles, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -282,6 +288,7 @@ function App({ user, logout }) {
           {tab === "olay" && <Incidents {...ctx} />}
           {tab === "rapor" && <Report {...ctx} />}
           {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
+          {tab === "unvan" && user.is_admin && <RolesManager {...ctx} />}
           {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
           {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
           {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
@@ -744,8 +751,10 @@ function Incidents({ user, zones = [], incidents, reload }) {
 }
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
-function Personnel({ user, staff, cleanLogs, reload }) {
-  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
+function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
+  const roleNames = roles.length > 0 ? roles.map(r => r.name) : FALLBACK_ROLES;
+  const firstRole = roleNames[0] || "Temizlik";
+  const [f, setF] = useState({ name: "", role: firstRole, shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [editId, setEditId] = useState(null);
   const [e_, setE_] = useState({});
@@ -755,7 +764,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
     if (!f.name.trim() || f.pin.length !== 4) return;
     const { perms, ...rest } = f;
     await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
-    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
+    setF({ name: "", role: firstRole, shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
     reload();
   };
 
@@ -827,7 +836,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
         <input style={S.input} placeholder="Ayşe Yılmaz" value={f.name} onChange={e => set("name", e.target.value)} />
         <label style={S.label}>Görev</label>
         <select style={S.input} value={f.role} onChange={e => roleChanged("new", e.target.value)}>
-          {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+          {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
         <label style={S.label}>Vardiya</label>
         <select style={S.input} value={f.shift} onChange={e => set("shift", e.target.value)}>
@@ -864,7 +873,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                   <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.name} onChange={ev => setE("name", ev.target.value)} placeholder="Ad Soyad" autoFocus />
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.role} onChange={ev => roleChanged("edit", ev.target.value)}>
-                      {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                      {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
                     </select>
                     <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.shift} onChange={ev => setE("shift", ev.target.value)}>
                       {SHIFTS.map(x => <option key={x} value={x}>{x}</option>)}
@@ -1130,6 +1139,99 @@ function Targets({ user, targets, reload }) {
       <div style={{ ...S.card, fontSize: 12.5, color: T.faint, lineHeight: 1.6 }}>
         Karbon faktörleri: geri dönüşüm {EMISSION["Geri Dönüşüm Tesisi"]}, kompost {EMISSION["Kompost Alanı"]}, depolama {EMISSION["Düzenli Depolama"]} kg CO₂e/kg;
         taşıma {EMISSION.TRANSPORT_PER_TON_KM} kg CO₂e/ton-km. Resmî raporlamada ulusal faktörlerle doğrulanmalıdır.
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════ GÖREV / UNVAN YÖNETİMİ (yalnız yönetici) ═══════════ */
+function RolesManager({ user, roles = [], staff, reload }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState("");
+
+  const dbRoles = roles.filter(r => r.id); // sadece veritabanındakiler (yedek listenin id'si yok)
+
+  const add = async () => {
+    if (!name.trim() || busy) return;
+    if (dbRoles.some(r => r.name.toLowerCase() === name.trim().toLowerCase())) { alert("Bu görev zaten var."); return; }
+    setBusy(true);
+    await insertRow("job_roles", { name: name.trim() }, user.name);
+    setName(""); setBusy(false); reload();
+  };
+
+  const startEdit = (r) => { setEditId(r.id); setEditName(r.name); };
+  const cancelEdit = () => { setEditId(null); setEditName(""); };
+  const saveEdit = async (r) => {
+    if (!editName.trim()) return;
+    await updateRow("job_roles", r.id, { name: editName.trim() }, user.name);
+    cancelEdit(); reload();
+  };
+  const remove = async (r) => {
+    const used = staff.some(s => s.role === r.name);
+    if (used) { alert(`"${r.name}" görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin.`); return; }
+    if (!window.confirm(`"${r.name}" görevi silinsin mi?`)) return;
+    await deactivateRow("job_roles", r.id, user.name);
+    reload();
+  };
+
+  if (!isOnline) {
+    return (
+      <div style={{ ...S.card, maxWidth: 560, margin: "0 auto" }}>
+        <div style={S.h2}>Görev / Unvan yönetimi</div>
+        <div style={{ fontSize: 13.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 14 }}>
+          Görevler yalnız merkezi modda yönetilir. Supabase'de schema_roles.sql çalıştırılmalı.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, alignItems: "start" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Yeni görev / unvan</div>
+        <div style={S.sub}>Personele atanacak görevleri buradan yönetin (örn: Vinç Operatörü, Güvenlik).</div>
+        <label style={S.label}>Görev adı</label>
+        <input style={S.input} placeholder="Örn: Vinç Operatörü" value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && add()} />
+        <button onClick={add} disabled={!name.trim() || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!name.trim() || busy) ? 0.4 : 1 }}>
+          {busy ? "Ekleniyor…" : "Görev ekle"}
+        </button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Görevler ({dbRoles.length})</div>
+        {dbRoles.length === 0 ? (
+          <div style={{ padding: "24px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz görev yok.</div>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            {dbRoles.map(r => {
+              const count = staff.filter(s => s.role === r.name).length;
+              return (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: `1px solid ${T.line}` }}>
+                  {editId === r.id ? (
+                    <>
+                      <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px", flex: 1 }} value={editName} onChange={e => setEditName(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && saveEdit(r)} autoFocus />
+                      <button onClick={() => saveEdit(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+                      <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{r.name}</div>
+                        <div style={{ fontSize: 12, color: T.faint }}>{count} personel</div>
+                      </div>
+                      <button onClick={() => startEdit(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                      <button onClick={() => remove(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
