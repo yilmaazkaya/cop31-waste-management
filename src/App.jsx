@@ -1191,6 +1191,10 @@ function TaskManager({ user, staff, tasks, reload }) {
                 <span style={S.tag(st.soft, st.color)}>{st.label}</span>
                 <span style={{ fontWeight: 700, fontSize: 14.5, color: T.ink, flex: 1, minWidth: 140 }}>{t.title}</span>
                 <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+                {DENEME_MODU && isAdmin && (
+                  <button onClick={async (e) => { e.stopPropagation(); if (window.confirm(`"${t.title}" KALICI silinsin mi?`)) { await hardDeleteRow("tasks", t.id, user.name); reload(); } }}
+                    title="Kalıcı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.red, color: "#fff" }}>Sil</button>
+                )}
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
                 {isAdmin && <span>→ {t.assignee_name}</span>}
@@ -1323,7 +1327,17 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto" }}>
-      <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost, marginBottom: 14 }}>← Görev listesi</button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Görev listesi</button>
+        {isAdmin && (
+          <button onClick={async () => { if (window.confirm(`"${task.title}" görevi kaldırılsın mı? (listeden kalkar, kayıt korunur)`)) { await deactivateRow("tasks", task.id, user.name); reload(); onBack(); } }}
+            style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.redSoft, color: T.red, marginLeft: "auto" }}>Kaldır</button>
+        )}
+        {DENEME_MODU && isAdmin && (
+          <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${task.title}" görevi KALICI silinsin mi? Yorumlar dahil geri alınamaz.`)) { await hardDeleteRow("tasks", task.id, user.name); reload(); onBack(); } }}
+            style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.red, color: "#fff" }}>Kalıcı sil</button>
+        )}
+      </div>
 
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
