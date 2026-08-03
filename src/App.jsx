@@ -55,7 +55,6 @@ const ALL_TABS = [
   { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
-  { id: "unvan",     label: "Görev & Departman", desc: "Unvan ve departmanları yönet", admin: true },
   { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
   { id: "qr",        label: "QR kodlar",   desc: "QR üret ve yazdır", admin: true },
   { id: "hedef",     label: "Hedefler",    desc: "ISO 20121 hedefleri", admin: true },
@@ -292,7 +291,6 @@ function App({ user, logout }) {
           {tab === "olay" && <Incidents {...ctx} />}
           {tab === "rapor" && <Report {...ctx} />}
           {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
-          {tab === "unvan" && user.is_admin && <RolesManager {...ctx} />}
           {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
           {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
           {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
@@ -802,275 +800,327 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
   const roleNames = roles.length > 0 ? roles.map(r => r.name) : FALLBACK_ROLES;
   const deptNames = depts.map(d => d.name);
   const firstRole = roleNames[0] || "Temizlik";
-  const [f, setF] = useState({ name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
-  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
-  const [editId, setEditId] = useState(null);
-  const [e_, setE_] = useState({});
-  const setE = (k, v) => setE_(p => ({ ...p, [k]: v }));
+
+  const [view, setView] = useState("ekip");        // ekip | tanimlar
+  const [showForm, setShowForm] = useState(false); // yeni personel paneli
+  const [q, setQ] = useState("");
   const [fDept, setFDept] = useState("hepsi");
   const [fRole, setFRole] = useState("hepsi");
-  const shown = staff.filter(s => staffMatches(s, fDept, fRole));
+  const [editId, setEditId] = useState(null);
+  const [expandId, setExpandId] = useState(null);  // ekran listesini açan satır
+
+  const blank = { name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
+  const [f, setF] = useState(blank);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [e_, setE_] = useState({});
+  const setE = (k, v) => setE_(p => ({ ...p, [k]: v }));
+
+  const shown = staff
+    .filter(s => staffMatches(s, fDept, fRole))
+    .filter(s => !q.trim() || s.name.toLowerCase().includes(q.trim().toLowerCase()));
 
   const add = async () => {
     if (!f.name.trim() || f.pin.length !== 4) return;
     const { perms, ...rest } = f;
     await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
-    setF({ name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
-    reload();
+    setF(blank); setShowForm(false); reload();
   };
 
   const startEdit = (s) => {
     let perms = [];
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
-    setEditId(s.id);
+    setEditId(s.id); setExpandId(null);
     setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift, phone: s.phone || "", email: s.email || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
   };
   const cancelEdit = () => { setEditId(null); setE_({}); };
   const saveEdit = async (s) => {
     if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
     await updateRow("staff", s.id, {
-      name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift, phone: e_.phone || null, email: e_.email || null,
-      pin: e_.pin, is_admin: e_.is_admin, permissions: JSON.stringify(e_.perms || []),
+      name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift,
+      phone: e_.phone || null, email: e_.email || null, pin: e_.pin, is_admin: e_.is_admin,
+      permissions: JSON.stringify(e_.perms || []),
     }, user.name);
     cancelEdit(); reload();
   };
 
-  /* Rol değişince önerilen ekranları otomatik işaretle (kullanıcı sonra değiştirebilir) */
   const roleChanged = (which, newRole) => {
     const suggested = ROLE_TABS[newRole] || [];
     if (which === "new") setF(p => ({ ...p, role: newRole, perms: suggested }));
     else setE_(p => ({ ...p, role: newRole, perms: suggested }));
   };
-
   const togglePerm = (which, id) => {
     const cur = which === "new" ? (f.perms || []) : (e_.perms || []);
     const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id];
-    if (which === "new") setF(p => ({ ...p, perms: next }));
-    else setE_(p => ({ ...p, perms: next }));
+    if (which === "new") setF(p => ({ ...p, perms: next })); else setE_(p => ({ ...p, perms: next }));
   };
 
-  /* Ekran seçim kutuları (yönetici işaretliyse gizlenir — o zaten her şeyi görür) */
   const PermPicker = ({ which, isAdmin, perms }) => isAdmin ? (
-    <div style={{ fontSize: 12.5, color: T.blue, background: T.blueSoft, borderRadius: 10, padding: 12, marginBottom: 12 }}>
+    <div style={{ fontSize: 12.5, color: T.blue, background: T.blueSoft, borderRadius: 9, padding: 10, marginBottom: 12 }}>
       Yönetici tüm ekranları görür — ayrı seçim gerekmez.
     </div>
   ) : (
     <div style={{ marginBottom: 12 }}>
       <label style={S.label}>Göreceği ekranlar</label>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(128px, 1fr))", gap: 5 }}>
         {ALL_TABS.filter(t => !t.admin).map(t => {
           const on = (perms || []).includes(t.id);
           return (
             <button key={t.id} type="button" onClick={() => togglePerm(which, t.id)} title={t.desc} style={{
-              ...S.btn, padding: "8px 10px", fontSize: 12.5, textAlign: "left",
-              background: on ? T.greenSoft : "#fbfcfb",
-              color: on ? T.green : T.sub,
-              border: `1.5px solid ${on ? T.green : T.line}`,
-              fontWeight: on ? 700 : 500,
+              ...S.btn, padding: "7px 9px", fontSize: 12, textAlign: "left",
+              background: on ? T.greenSoft : "#fbfcfb", color: on ? T.green : T.sub,
+              border: `1.5px solid ${on ? T.green : T.line}`, fontWeight: on ? 700 : 500,
             }}>{on ? "✓ " : ""}{t.label}</button>
           );
         })}
       </div>
-      {(perms || []).length === 0 && (
-        <div style={{ fontSize: 12, color: T.amber, marginTop: 6 }}>En az bir ekran seçin.</div>
-      )}
+      {(perms || []).length === 0 && <div style={{ fontSize: 11.5, color: T.amber, marginTop: 5 }}>En az bir ekran seçin.</div>}
     </div>
   );
 
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-      <div style={S.card}>
-        <div style={S.h2}>Yeni personel</div>
-        <div style={S.sub}>PIN 4 haneli olmalı — personel bu kodla giriş yapar.</div>
-        <label style={S.label}>Ad Soyad</label>
-        <input style={S.input} placeholder="Ayşe Yılmaz" value={f.name} onChange={e => set("name", e.target.value)} />
-        <label style={S.label}>Görev</label>
-        <select style={S.input} value={f.role} onChange={e => roleChanged("new", e.target.value)}>
-          {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
-        <label style={S.label}>Departman</label>
-        <select style={S.input} value={f.department} onChange={e => set("department", e.target.value)}>
-          <option value="">— Seçilmedi —</option>
-          {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <label style={S.label}>Vardiya</label>
-        <select style={S.input} value={f.shift} onChange={e => set("shift", e.target.value)}>
-          {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div>
-            <label style={S.label}>Telefon</label>
-            <input style={S.input} placeholder="05xx…" value={f.phone} onChange={e => set("phone", e.target.value)} />
-          </div>
-          <div>
-            <label style={S.label}>PIN (4 hane)</label>
-            <input style={S.input} maxLength={4} inputMode="numeric" placeholder="****" value={f.pin} onChange={e => set("pin", e.target.value.replace(/\D/g, ""))} />
-          </div>
+  /* Ortak form alanları (yeni + düzenle) */
+  const FormFields = ({ which, v, onChange, compact }) => (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr 1fr" : "1fr", gap: 10 }}>
+        <div style={{ gridColumn: compact ? "1 / -1" : "auto" }}>
+          <label style={S.label}>Ad Soyad</label>
+          <input style={S.input} placeholder="Ayşe Yılmaz" value={v.name} onChange={e => onChange("name", e.target.value)} />
         </div>
-        <label style={S.label}>E-posta (görev bildirimi için)</label>
-        <input style={S.input} type="email" placeholder="ornek@eposta.com" value={f.email || ""} onChange={e => set("email", e.target.value)} />
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: T.sub, marginBottom: 14, cursor: "pointer" }}>
-          <input type="checkbox" checked={f.is_admin} onChange={e => set("is_admin", e.target.checked)} />
-          Yönetici yetkisi (tüm ekranları görür)
-        </label>
-        <PermPicker which="new" isAdmin={f.is_admin} perms={f.perms} />
-        <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)}
-          style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>Ekle</button>
-      </div>
-
-      <div style={S.card}>
-        <div style={S.h2}>Ekip ({shown.length}{shown.length !== staff.length ? ` / ${staff.length}` : ""})</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "12px 0 4px" }}>
-          {deptNames.length > 0 && (
-            <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "7px 10px", fontSize: 13 }} value={fDept} onChange={e => setFDept(e.target.value)}>
-              <option value="hepsi">Tüm departmanlar</option>
-              {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
-              <option value="__yok">— Departmansız —</option>
-            </select>
-          )}
-          <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 140, padding: "7px 10px", fontSize: 13 }} value={fRole} onChange={e => setFRole(e.target.value)}>
-            <option value="hepsi">Tüm görevler</option>
+        <div>
+          <label style={S.label}>Görev</label>
+          <select style={S.input} value={v.role} onChange={e => roleChanged(which, e.target.value)}>
             {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
-          {(fDept !== "hepsi" || fRole !== "hepsi") && (
-            <button onClick={() => { setFDept("hepsi"); setFRole("hepsi"); }} style={{ ...S.btn, padding: "7px 12px", fontSize: 12.5, ...S.btnGhost }}>Temizle</button>
-          )}
         </div>
-        <div style={{ marginTop: 10 }}>
-          {shown.map(s => (
-            <div key={s.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
-              {editId === s.id ? (
-                <div>
-                  <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.name} onChange={ev => setE("name", ev.target.value)} placeholder="Ad Soyad" autoFocus />
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.role} onChange={ev => roleChanged("edit", ev.target.value)}>
-                      {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                    <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.shift} onChange={ev => setE("shift", ev.target.value)}>
-                      {SHIFTS.map(x => <option key={x} value={x}>{x}</option>)}
-                    </select>
-                  </div>
-                  <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.department || ""} onChange={ev => setE("department", ev.target.value)}>
-                    <option value="">— Departman seçilmedi —</option>
-                    {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
-                  </select>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.phone} onChange={ev => setE("phone", ev.target.value)} placeholder="Telefon" />
-                    <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} maxLength={4} inputMode="numeric" value={e_.pin} onChange={ev => setE("pin", ev.target.value.replace(/\D/g, ""))} placeholder="PIN (4 hane)" />
-                  </div>
-                  <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} type="email" value={e_.email} onChange={ev => setE("email", ev.target.value)} placeholder="E-posta (görev bildirimi)" />
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.sub, marginBottom: 10, cursor: "pointer" }}>
-                    <input type="checkbox" checked={e_.is_admin} onChange={ev => setE("is_admin", ev.target.checked)} />
-                    Yönetici yetkisi
-                  </label>
-                  <PermPicker which="edit" isAdmin={e_.is_admin} perms={e_.perms} />
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={() => saveEdit(s)} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGreen }}>Kaydet</button>
-                    <button onClick={cancelEdit} style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, ...S.btnGhost }}>İptal</button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
-                    {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
-                    <div style={{ fontSize: 12.5, color: T.sub }}>{s.role}{s.department ? ` · ${s.department}` : ""} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
-                    <div style={{ fontSize: 11.5, color: T.faint, marginTop: 2 }}>
-                      Ekranlar: {s.is_admin ? "Tümü" : allowedTabsFor(s).map(id => ALL_TABS.find(t => t.id === id)?.label).filter(Boolean).join(", ") || "—"}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "center", flexShrink: 0 }}>
-                    <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 17, color: T.green }}>
-                      {cleanLogs.filter(c => c.staff_id === s.id).length}
-                    </div>
-                    <div style={{ fontSize: 10.5, color: T.faint }}>kayıt</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                    <button onClick={() => startEdit(s)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
-                    {s.id !== user.id && (
-                      <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
-                        style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Pasifleştir</button>
-                    )}
-                    {DENEME_MODU && s.id !== user.id && (
-                      <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${s.name}" KALICI olarak silinsin mi? Bu geri alınamaz.`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
-                        style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+        <div>
+          <label style={S.label}>Departman</label>
+          <select style={S.input} value={v.department || ""} onChange={e => onChange("department", e.target.value)}>
+            <option value="">— Seçilmedi —</option>
+            {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Vardiya</label>
+          <select style={S.input} value={v.shift} onChange={e => onChange("shift", e.target.value)}>
+            {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>PIN (4 hane)</label>
+          <input style={S.input} maxLength={4} inputMode="numeric" placeholder="****" value={v.pin}
+            onChange={e => onChange("pin", e.target.value.replace(/\D/g, ""))} />
+        </div>
+        <div>
+          <label style={S.label}>Telefon</label>
+          <input style={S.input} placeholder="05xx…" value={v.phone} onChange={e => onChange("phone", e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>E-posta</label>
+          <input style={S.input} type="email" placeholder="ornek@eposta.com" value={v.email} onChange={e => onChange("email", e.target.value)} />
         </div>
       </div>
-
-      {DENEME_MODU && (
-        <div style={{ ...S.card, gridColumn: "1 / -1", background: T.redSoft, borderColor: "#e5b8b8" }}>
-          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 4 }}>Deneme verisini temizle</div>
-          <div style={{ fontSize: 13, color: "#7a2020", marginBottom: 14, lineHeight: 1.6 }}>
-            Tüm temizlik, atık, olay, görev ve bölge kayıtlarını ve <b>kendiniz hariç</b> personeli KALICI olarak siler.
-            Canlıya geçmeden önce sistemi sıfırlamak için kullanın. Bu işlem geri alınamaz.
-          </div>
-          <button onClick={async () => {
-            if (!window.confirm("TÜM deneme verisi kalıcı silinecek (kendiniz hariç). Emin misiniz?")) return;
-            if (!window.confirm("Son onay: bu işlem GERİ ALINAMAZ. Devam?")) return;
-            for (const tbl of ["clean_logs", "waste_logs", "incidents", "assignments", "zones"]) {
-              const rows = await fetchAll(tbl);
-              for (const r of rows) await hardDeleteRow(tbl, r.id, user.name);
-            }
-            const people = await fetchAll("staff");
-            for (const p of people) if (p.id !== user.id) await hardDeleteRow("staff", p.id, user.name);
-            alert("Deneme verisi temizlendi.");
-            reload();
-          }} style={{ ...S.btn, background: T.red, color: "#fff" }}>
-            Tüm deneme verisini sil
-          </button>
-        </div>
-      )}
-    </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.sub, margin: "4px 0 12px", cursor: "pointer" }}>
+        <input type="checkbox" checked={v.is_admin} onChange={e => onChange("is_admin", e.target.checked)} />
+        Yönetici yetkisi (tüm ekranları görür)
+      </label>
+      <PermPicker which={which} isAdmin={v.is_admin} perms={v.perms} />
+    </>
   );
-}
 
-/* ═══════════ QR ═══════════ */
-function QRManager({ zones = [] }) {
   return (
     <div>
-      <div style={S.card}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <div style={S.h2}>Bölge QR kodları</div>
-            <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.65 }}>
-              Her bölge için otomatik QR kod üretilir. Yazdırıp alan girişlerine asın. Personel telefonla
-              okuttuğunda sistem o bölge seçili açılır; kendi PIN'i ile giriş yaptığı için kayıt otomatik onun adına oluşur.
-              Yeni bölge eklemek için <b>Bölgeler</b> sekmesini kullanın — QR kod anında burada görünür.
-            </div>
-          </div>
-          {zones.length > 0 && <button onClick={() => window.print()} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>Tümünü yazdır</button>}
-        </div>
+      {/* Üst sekme: Ekip / Tanımlar */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        {[{ id: "ekip", label: `Ekip (${staff.length})` }, { id: "tanimlar", label: "Görev & Departman tanımları" }].map(v => (
+          <button key={v.id} onClick={() => setView(v.id)} style={{
+            ...S.btn, padding: "9px 16px", fontSize: 13.5,
+            background: view === v.id ? T.green : "#fbfcfb", color: view === v.id ? "#fff" : T.sub,
+            border: `1.5px solid ${view === v.id ? T.green : T.line}`,
+          }}>{v.label}</button>
+        ))}
+        {view === "ekip" && (
+          <button onClick={() => { setShowForm(s => !s); setEditId(null); }} style={{ ...S.btn, ...S.btnGreen, marginLeft: "auto" }}>
+            {showForm ? "× Kapat" : "+ Yeni personel"}
+          </button>
+        )}
       </div>
-      {zones.length === 0 ? (
-        <div style={{ ...S.card, textAlign: "center", padding: 40, color: T.faint }}>
-          Henüz bölge yok. <b>Bölgeler</b> sekmesinden bölge ekleyin, QR kodlar otomatik oluşsun.
+
+      {view === "tanimlar" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+          <LookupManager user={user} reload={reload} staff={staff} table="job_roles" items={roles.filter(r => r.id)}
+            title="Görev / Unvan" hint="Personele atanacak unvanlar (örn: Vinç Operatörü)."
+            placeholder="Örn: Vinç Operatörü" usedBy={(s, n) => s.role === n}
+            usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin." />
+          <LookupManager user={user} reload={reload} staff={staff} table="departments" items={depts}
+            title="Departman" hint="Ekip birimleri (örn: Lojistik). Filtrelemede kullanılır."
+            placeholder="Örn: Lojistik" usedBy={(s, n) => s.department === n}
+            usedMsg="departmanı bazı personelde kullanılıyor. Önce o kişilerin departmanını değiştirin." />
         </div>
       ) : (
-        <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
-          {zones.map(z => (
-            <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
-              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
-              <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id}{z.area ? ` · ${z.area}` : ""}</div>
-              <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
-                <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
+        <>
+          {/* Yeni personel paneli (katlanır) */}
+          {showForm && (
+            <div style={{ ...S.card, borderColor: T.green }}>
+              <div style={S.h2}>Yeni personel</div>
+              <div style={S.sub}>PIN 4 haneli olmalı — personel bu kodla giriş yapar.</div>
+              <FormFields which="new" v={f} onChange={set} compact />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)}
+                  style={{ ...S.btn, ...S.btnGreen, opacity: (!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
+                  Personeli ekle
+                </button>
+                <button onClick={() => { setShowForm(false); setF(blank); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
               </div>
-              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
             </div>
-          ))}
-        </div>
+          )}
+
+          {/* Arama + filtre */}
+          <div style={{ ...S.card, padding: 14, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input style={{ ...S.input, marginBottom: 0, flex: 1, minWidth: 160, padding: "8px 11px", fontSize: 13 }}
+              placeholder="İsim ara…" value={q} onChange={e => setQ(e.target.value)} />
+            {deptNames.length > 0 && (
+              <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "8px 11px", fontSize: 13 }} value={fDept} onChange={e => setFDept(e.target.value)}>
+                <option value="hepsi">Tüm departmanlar</option>
+                {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+                <option value="__yok">— Departmansız —</option>
+              </select>
+            )}
+            <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 140, padding: "8px 11px", fontSize: 13 }} value={fRole} onChange={e => setFRole(e.target.value)}>
+              <option value="hepsi">Tüm görevler</option>
+              {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            {(q || fDept !== "hepsi" || fRole !== "hepsi") && (
+              <button onClick={() => { setQ(""); setFDept("hepsi"); setFRole("hepsi"); }} style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, ...S.btnGhost }}>Temizle</button>
+            )}
+            <span style={{ fontSize: 12, color: T.faint, marginLeft: "auto" }}>{shown.length} / {staff.length} personel</span>
+          </div>
+
+          {/* Ekip tablosu */}
+          <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
+            {shown.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: T.faint, fontSize: 13.5 }}>Kayıt bulunamadı.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
+                      {["Personel", "Görev", "Departman", "Vardiya", "Ekran", "Kayıt", ""].map((h, i) => (
+                        <th key={h + i} style={{ padding: "11px 12px", textAlign: i === 0 ? "left" : i >= 4 ? "center" : "left", color: T.sub, fontWeight: 600, fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map(s => {
+                      const tabs = s.is_admin ? ["Tümü"] : allowedTabsFor(s).map(id => ALL_TABS.find(t => t.id === id)?.label).filter(Boolean);
+                      const isEditing = editId === s.id;
+                      return (
+                        <>
+                          <tr key={s.id} style={{ borderBottom: `1px solid ${T.line}`, background: isEditing ? T.greenSoft : "transparent" }}>
+                            <td style={{ padding: "11px 12px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                                <div style={{ width: 32, height: 32, borderRadius: 8, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 12, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
+                                  {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, color: T.ink, whiteSpace: "nowrap" }}>{s.name}</div>
+                                  {s.is_admin && <div style={{ fontSize: 11, color: T.blue, fontWeight: 600 }}>Yönetici</div>}
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap" }}>{s.role}</td>
+                            <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap" }}>{s.department || <span style={{ color: T.faint }}>—</span>}</td>
+                            <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap", fontSize: 12.5 }}>{s.shift}</td>
+                            <td style={{ padding: "11px 12px", textAlign: "center" }}>
+                              <button onClick={() => setExpandId(expandId === s.id ? null : s.id)} title={tabs.join(", ")}
+                                style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: s.is_admin ? T.blueSoft : "#eef0ef", color: s.is_admin ? T.blue : T.sub, whiteSpace: "nowrap" }}>
+                                {s.is_admin ? "Tümü" : `${tabs.length} ekran`} ▾
+                              </button>
+                            </td>
+                            <td style={{ padding: "11px 12px", textAlign: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, color: T.green }}>
+                              {cleanLogs.filter(c => c.staff_id === s.id).length}
+                            </td>
+                            <td style={{ padding: "11px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+                              <button onClick={() => isEditing ? cancelEdit() : startEdit(s)}
+                                style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue, marginRight: 5 }}>
+                                {isEditing ? "Kapat" : "Düzenle"}
+                              </button>
+                              {s.id !== user.id && (
+                                <>
+                                  <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
+                                    style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: "#eef0ef", color: T.sub, marginRight: 5 }}>Pasif</button>
+                                  {DENEME_MODU && (
+                                    <button onClick={async () => { if (window.confirm(`"${s.name}" KALICI silinsin mi?`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
+                                      style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                          </tr>
+
+                          {/* Ekran listesi (katlanır) */}
+                          {expandId === s.id && !isEditing && (
+                            <tr key={s.id + "-x"} style={{ borderBottom: `1px solid ${T.line}`, background: "#fafbfa" }}>
+                              <td colSpan={7} style={{ padding: "10px 14px" }}>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                                  <span style={{ fontSize: 11.5, color: T.faint, fontWeight: 600, marginRight: 4 }}>GÖRDÜĞÜ EKRANLAR:</span>
+                                  {tabs.map(t => <span key={t} style={S.tag(T.greenSoft, T.green)}>{t}</span>)}
+                                  {s.email && <span style={{ fontSize: 12, color: T.sub, marginLeft: "auto" }}>✉ {s.email}</span>}
+                                  {s.phone && <span style={{ fontSize: 12, color: T.sub }}>☎ {s.phone}</span>}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+
+                          {/* Düzenleme satırı */}
+                          {isEditing && (
+                            <tr key={s.id + "-e"} style={{ borderBottom: `2px solid ${T.green}`, background: "#fafbfa" }}>
+                              <td colSpan={7} style={{ padding: 18 }}>
+                                <div style={{ maxWidth: 720 }}>
+                                  <FormFields which="edit" v={e_} onChange={setE} compact />
+                                  <div style={{ display: "flex", gap: 8 }}>
+                                    <button onClick={() => saveEdit(s)} disabled={!e_.name?.trim() || (e_.pin || "").length !== 4}
+                                      style={{ ...S.btn, ...S.btnGreen, opacity: (!e_.name?.trim() || (e_.pin || "").length !== 4) ? 0.4 : 1 }}>Kaydet</button>
+                                    <button onClick={cancelEdit} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {DENEME_MODU && (
+            <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8", marginTop: 16 }}>
+              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 4 }}>Deneme verisini temizle</div>
+              <div style={{ fontSize: 13, color: "#7a2020", marginBottom: 14, lineHeight: 1.6 }}>
+                Tüm temizlik, atık, olay, görev ve bölge kayıtlarını ve <b>kendiniz hariç</b> personeli KALICI siler. Geri alınamaz.
+              </div>
+              <button onClick={async () => {
+                if (!window.confirm("TÜM deneme verisi kalıcı silinecek (kendiniz hariç). Emin misiniz?")) return;
+                if (!window.confirm("Son onay: bu işlem GERİ ALINAMAZ. Devam?")) return;
+                for (const tbl of ["clean_logs", "waste_logs", "incidents", "assignments", "zones", "tasks"]) {
+                  const rows = await fetchAll(tbl);
+                  for (const r of rows) await hardDeleteRow(tbl, r.id, user.name);
+                }
+                const people = await fetchAll("staff");
+                for (const p of people) if (p.id !== user.id) await hardDeleteRow("staff", p.id, user.name);
+                alert("Deneme verisi temizlendi.");
+                reload();
+              }} style={{ ...S.btn, background: T.red, color: "#fff" }}>Tüm deneme verisini sil</button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
+
 
 /* ═══════════ BÖLGE YÖNETİMİ (yalnız yönetici) ═══════════ */
 function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
@@ -1221,37 +1271,6 @@ function Targets({ user, targets, reload }) {
 }
 
 /* ═══════════ GÖREV / UNVAN YÖNETİMİ (yalnız yönetici) ═══════════ */
-function RolesManager({ user, roles = [], depts = [], staff, reload }) {
-  if (!isOnline) {
-    return (
-      <div style={{ ...S.card, maxWidth: 560, margin: "0 auto" }}>
-        <div style={S.h2}>Görev & Departman yönetimi</div>
-        <div style={{ fontSize: 13.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 14 }}>
-          Yalnız merkezi modda yönetilir. Supabase'de schema_roles.sql ve schema_departments.sql çalıştırılmalı.
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-      <LookupManager
-        user={user} reload={reload} staff={staff}
-        table="job_roles" items={roles.filter(r => r.id)}
-        title="Görev / Unvan" hint="Personele atanacak unvanlar (örn: Vinç Operatörü, Güvenlik)."
-        placeholder="Örn: Vinç Operatörü" usedBy={(s, name) => s.role === name}
-        usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin."
-      />
-      <LookupManager
-        user={user} reload={reload} staff={staff}
-        table="departments" items={depts}
-        title="Departman" hint="Ekip birimleri (örn: Lojistik, Çevre & Denetim). Filtrelemede kullanılır."
-        placeholder="Örn: Lojistik" usedBy={(s, name) => s.department === name}
-        usedMsg="departmanı bazı personelde kullanılıyor. Önce o kişilerin departmanını değiştirin."
-      />
-    </div>
-  );
-}
-
 /* Görev ve departman için ortak ekle/düzenle/sil bileşeni */
 function LookupManager({ user, reload, staff, table, items, title, hint, placeholder, usedBy, usedMsg }) {
   const [name, setName] = useState("");
