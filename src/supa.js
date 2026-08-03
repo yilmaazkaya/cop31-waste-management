@@ -99,6 +99,23 @@ function shrink(file, maxW, q) {
   });
 }
 
+/* Her tür dosya yükleme (görev ekleri: PDF, Word, Excel, resim…).
+   Resimse küçültülür; diğer türler olduğu gibi yüklenir.
+   'gorev' bucket'ına yazar, herkese açık URL döner. */
+export async function uploadFile(file, bucket = "gorev") {
+  if (!supa || !file) return null;
+  const isImg = file.type.startsWith("image/");
+  const body = isImg ? await shrink(file, 1400, 0.75) : file;
+  const safe = (file.name || "dosya").replace(/[^\w.\-]/g, "_").slice(-60);
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${safe}`;
+  const { error } = await supa.storage.from(bucket).upload(path, body, {
+    contentType: isImg ? "image/jpeg" : (file.type || "application/octet-stream"),
+  });
+  if (error) { console.error(error); alert("Dosya yüklenemedi: " + error.message); return null; }
+  const { data } = supa.storage.from(bucket).getPublicUrl(path);
+  return { url: data?.publicUrl || null, name: file.name || "dosya" };
+}
+
 /* ── Karbon emisyon faktörleri (kg CO2e / kg atık) ──
    Kaynak: yaklaşık DEFRA/EPA WARM değerleri; kesin raporlama için
    resmi ulusal faktörlerle güncellenmelidir. */

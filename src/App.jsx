@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
-import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -1115,95 +1115,48 @@ const PRIORITIES = [
   { id: "orta", label: "Orta", color: "#b07d1e" },
   { id: "yuksek", label: "Yüksek", color: "#b03030" },
 ];
+/* Onay akışı: yapilacak → devam → onay_bekliyor → tamamlandi
+   Yönetici onay_bekliyor'u "tamamlandi" yapar ya da "revize" ile geri çevirir. */
 const STATUSES = [
   { id: "yapilacak", label: "Yapılacak", color: "#5c6b63", soft: "#eef0ef" },
   { id: "devam", label: "Devam ediyor", color: "#b07d1e", soft: "#faf3e3" },
+  { id: "onay_bekliyor", label: "Onay bekliyor", color: "#2f6fb2", soft: "#e9f1f9" },
+  { id: "revize", label: "Revize gerekli", color: "#b03030", soft: "#fbeaea" },
   { id: "tamamlandi", label: "Tamamlandı", color: "#1e6b45", soft: "#e6f2ec" },
 ];
+const statOf = (id) => STATUSES.find(s => s.id === id) || STATUSES[0];
+const priOf = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
+const parseCl = (s) => { try { return JSON.parse(s || "[]"); } catch { return []; } };
 
 function TaskManager({ user, staff, tasks, reload }) {
   const isAdmin = user.is_admin;
-  const [f, setF] = useState({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
-  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
-  const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState("hepsi");
+  const [openId, setOpenId] = useState(null);
+  const [filter, setFilter] = useState("acik");
 
-  // Atanan kişi bu ekranı açınca kendine ait görevleri "görüldü" işaretle
+  // Ekranı açınca kendine atanan görülmemişleri "görüldü" işaretle
   useEffect(() => {
     (async () => {
       const mine = tasks.filter(t => t.assignee_id === user.id && !t.seen);
-      if (mine.length) {
-        for (const t of mine) await updateRow("tasks", t.id, { seen: true }, user.name);
-        reload();
-      }
+      if (mine.length) { for (const t of mine) await updateRow("tasks", t.id, { seen: true }, user.name); reload(); }
     })();
   }, []); // eslint-disable-line
 
-  const create = async () => {
-    if (!f.title.trim() || !f.assignee_id || busy) return;
-    setBusy(true);
-    const p = staff.find(s => s.id === f.assignee_id);
-    const row = {
-      title: f.title.trim(), description: f.description.trim() || null,
-      assignee_id: f.assignee_id, assignee_name: p?.name || "",
-      assigned_by: user.name, due_date: f.due_date || null,
-      priority: f.priority, status: "yapilacak",
-      notify_email: p?.email || null, seen: false, notified: false,
-    };
-    const saved = await insertRow("tasks", row, user.name);
-    // E-posta bildirimi (uç nokta yoksa sessizce atlanır)
-    if (p?.email) {
-      const ok = await sendTaskEmail({ to: p.email, name: p.name, title: row.title, due: row.due_date, priority: row.priority, assignedBy: user.name });
-      if (ok && saved?.id) await updateRow("tasks", saved.id, { notified: true }, user.name);
-    }
-    setF({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
-    setBusy(false); reload();
-  };
+  const mineOrAll = isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id);
+  const visible = mineOrAll.filter(t => {
+    if (filter === "acik") return t.status !== "tamamlandi";
+    if (filter === "hepsi") return true;
+    return t.status === filter;
+  }).slice().reverse();
 
-  const setStatus = async (t, status) => { await updateRow("tasks", t.id, { status }, user.name); reload(); };
-  const removeTask = async (t) => { if (window.confirm("Görev kaldırılsın mı?")) { await deactivateRow("tasks", t.id, user.name); reload(); } };
-
-  // Yönetici hepsini, personel sadece kendine atananı görür
-  const visible = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id))
-    .filter(t => filter === "hepsi" ? true : t.status === filter)
-    .slice().reverse();
-
-  const stat = (id) => STATUSES.find(s => s.id === id) || STATUSES[0];
-  const pri = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
+  if (openId) {
+    const t = tasks.find(x => x.id === openId);
+    if (!t) { setOpenId(null); return null; }
+    return <TaskDetail task={t} user={user} isAdmin={isAdmin} onBack={() => setOpenId(null)} reload={reload} />;
+  }
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: isAdmin ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
-      {isAdmin && (
-        <div style={S.card}>
-          <div style={S.h2}>Yeni görev ata</div>
-          <div style={S.sub}>Görev atanınca kişiye uygulama içi bildirim (ve e-posta ayarlıysa e-posta) gider.</div>
-          <label style={S.label}>Başlık</label>
-          <input style={S.input} placeholder="Örn: Z04 yemek alanı denetimi" value={f.title} onChange={e => set("title", e.target.value)} />
-          <label style={S.label}>Açıklama</label>
-          <textarea style={{ ...S.input, height: 70, resize: "vertical" }} placeholder="Detay…" value={f.description} onChange={e => set("description", e.target.value)} />
-          <label style={S.label}>Kime</label>
-          <select style={S.input} value={f.assignee_id} onChange={e => set("assignee_id", e.target.value)}>
-            <option value="">Personel seçin</option>
-            {staff.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
-          </select>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={S.label}>Termin</label>
-              <input style={S.input} type="date" value={f.due_date} onChange={e => set("due_date", e.target.value)} />
-            </div>
-            <div>
-              <label style={S.label}>Öncelik</label>
-              <select style={S.input} value={f.priority} onChange={e => set("priority", e.target.value)}>
-                {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-              </select>
-            </div>
-          </div>
-          <button onClick={create} disabled={!f.title.trim() || !f.assignee_id || busy}
-            style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.title.trim() || !f.assignee_id || busy) ? 0.4 : 1 }}>
-            {busy ? "Atanıyor…" : "Görevi ata"}
-          </button>
-        </div>
-      )}
+      {isAdmin && <NewTaskForm user={user} staff={staff} reload={reload} />}
 
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
@@ -1211,10 +1164,10 @@ function TaskManager({ user, staff, tasks, reload }) {
             <div style={S.h2}>{isAdmin ? "Tüm görevler" : "Bana atanan görevler"}</div>
             <div style={{ fontSize: 13, color: T.sub }}>{visible.length} görev</div>
           </div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[{ id: "hepsi", label: "Hepsi" }, ...STATUSES].map(s => (
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {[{ id: "acik", label: "Açık" }, { id: "hepsi", label: "Hepsi" }, ...STATUSES].map(s => (
               <button key={s.id} onClick={() => setFilter(s.id)} style={{
-                ...S.btn, padding: "6px 12px", fontSize: 12.5,
+                ...S.btn, padding: "6px 11px", fontSize: 12,
                 background: filter === s.id ? T.green : "#fbfcfb",
                 color: filter === s.id ? "#fff" : T.sub,
                 border: `1.5px solid ${filter === s.id ? T.green : T.line}`,
@@ -1225,51 +1178,256 @@ function TaskManager({ user, staff, tasks, reload }) {
 
         {visible.length === 0 ? (
           <div style={{ padding: "40px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
-            {isAdmin ? "Henüz görev atanmadı." : "Size atanmış görev yok."}
+            {isAdmin ? "Görev yok." : "Size atanmış görev yok."}
           </div>
-        ) : (
-          <div>
-            {visible.map(t => {
-              const st = stat(t.status), pr = pri(t.priority);
-              const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < new Date(new Date().toDateString());
-              return (
-                <div key={t.id} style={{ padding: "14px 0", borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14.5, color: T.ink }}>{t.title}</div>
-                      {t.description && <div style={{ fontSize: 13, color: T.sub, marginTop: 3 }}>{t.description}</div>}
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
-                        <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
-                        {isAdmin && <span style={{ fontSize: 12.5, color: T.sub }}>→ {t.assignee_name}</span>}
-                        {t.due_date && <span style={{ fontSize: 12.5, color: overdue ? T.red : T.faint, fontWeight: overdue ? 700 : 400 }}>Termin: {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " (gecikti)" : ""}</span>}
-                        <span style={{ fontSize: 12, color: T.faint }}>· Atayan: {t.assigned_by}</span>
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {STATUSES.map(s => (
-                          <button key={s.id} onClick={() => setStatus(t, s.id)} style={{
-                            ...S.btn, padding: "5px 10px", fontSize: 11.5,
-                            background: t.status === s.id ? s.color : s.soft,
-                            color: t.status === s.id ? "#fff" : s.color,
-                            border: "none",
-                          }}>{s.label}</button>
-                        ))}
-                      </div>
-                      {isAdmin && (
-                        <button onClick={() => removeTask(t)} style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Kaldır</button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        ) : visible.map(t => {
+          const st = statOf(t.status), pr = priOf(t.priority);
+          const cl = parseCl(t.checklist);
+          const done = cl.filter(i => i.done).length;
+          const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < new Date(new Date().toDateString());
+          return (
+            <div key={t.id} onClick={() => setOpenId(t.id)} style={{ padding: "13px 0", borderBottom: `1px solid ${T.line}`, cursor: "pointer" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={S.tag(st.soft, st.color)}>{st.label}</span>
+                <span style={{ fontWeight: 700, fontSize: 14.5, color: T.ink, flex: 1, minWidth: 140 }}>{t.title}</span>
+                <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
+                {isAdmin && <span>→ {t.assignee_name}</span>}
+                {cl.length > 0 && <span>☑ {done}/{cl.length}</span>}
+                {t.due_date && <span style={{ color: overdue ? T.red : T.faint, fontWeight: overdue ? 700 : 400 }}>Termin: {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " (gecikti)" : ""}</span>}
+                <span style={{ marginLeft: "auto", color: T.blue, fontWeight: 600 }}>Aç →</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
+
+/* ── Yeni görev formu (kontrol listesi dahil) ── */
+function NewTaskForm({ user, staff, reload }) {
+  const [f, setF] = useState({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [steps, setSteps] = useState([]);
+  const [stepText, setStepText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const addStep = () => { if (stepText.trim()) { setSteps(p => [...p, { text: stepText.trim(), done: false }]); setStepText(""); } };
+
+  const create = async () => {
+    if (!f.title.trim() || !f.assignee_id || busy) return;
+    setBusy(true);
+    const p = staff.find(s => s.id === f.assignee_id);
+    const row = {
+      title: f.title.trim(), description: f.description.trim() || null,
+      assignee_id: f.assignee_id, assignee_name: p?.name || "", assigned_by: user.name,
+      due_date: f.due_date || null, priority: f.priority, status: "yapilacak",
+      checklist: JSON.stringify(steps), notify_email: p?.email || null, seen: false, notified: false,
+    };
+    const saved = await insertRow("tasks", row, user.name);
+    if (p?.email) {
+      const ok = await sendTaskEmail({ to: p.email, name: p.name, title: row.title, due: row.due_date, priority: row.priority, assignedBy: user.name });
+      if (ok && saved?.id) await updateRow("tasks", saved.id, { notified: true }, user.name);
+    }
+    setF({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
+    setSteps([]); setBusy(false); reload();
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>Yeni görev ata</div>
+      <div style={S.sub}>Atanınca kişiye bildirim gider. Alt adımlar (kontrol listesi) ekleyebilirsiniz.</div>
+      <label style={S.label}>Başlık</label>
+      <input style={S.input} placeholder="Örn: Z04 yemek alanı denetimi" value={f.title} onChange={e => set("title", e.target.value)} />
+      <label style={S.label}>Açıklama</label>
+      <textarea style={{ ...S.input, height: 64, resize: "vertical" }} placeholder="Detay / talimat…" value={f.description} onChange={e => set("description", e.target.value)} />
+      <label style={S.label}>Kime</label>
+      <select style={S.input} value={f.assignee_id} onChange={e => set("assignee_id", e.target.value)}>
+        <option value="">Personel seçin</option>
+        {staff.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
+      </select>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={S.label}>Termin</label>
+          <input style={S.input} type="date" value={f.due_date} onChange={e => set("due_date", e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Öncelik</label>
+          <select style={S.input} value={f.priority} onChange={e => set("priority", e.target.value)}>
+            {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <label style={S.label}>Kontrol listesi (alt adımlar)</label>
+      {steps.map((s, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.ink, padding: "4px 0" }}>
+          <span style={{ color: T.faint }}>{i + 1}.</span>
+          <span style={{ flex: 1 }}>{s.text}</span>
+          <button onClick={() => setSteps(p => p.filter((_, j) => j !== i))} style={{ ...S.btn, padding: "2px 8px", fontSize: 11, background: T.redSoft, color: T.red }}>×</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        <input style={{ ...S.input, marginBottom: 0 }} placeholder="Adım ekle…" value={stepText}
+          onChange={e => setStepText(e.target.value)} onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addStep())} />
+        <button onClick={addStep} style={{ ...S.btn, ...S.btnGhost, flexShrink: 0 }}>Ekle</button>
+      </div>
+
+      <button onClick={create} disabled={!f.title.trim() || !f.assignee_id || busy}
+        style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.title.trim() || !f.assignee_id || busy) ? 0.4 : 1 }}>
+        {busy ? "Atanıyor…" : "Görevi ata"}
+      </button>
+    </div>
+  );
+}
+
+/* ── Görev detayı: kontrol listesi, dosya, yorum, onay ── */
+function TaskDetail({ task, user, isAdmin, onBack, reload }) {
+  const [comments, setComments] = useState([]);
+  const [body, setBody] = useState("");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const st = statOf(task.status), pr = priOf(task.priority);
+  const cl = parseCl(task.checklist);
+  const mine = task.assignee_id === user.id;
+
+  const loadComments = async () => {
+    const all = await fetchAll("task_comments");
+    setComments(all.filter(c => c.task_id === task.id && c.active !== false));
+  };
+  useEffect(() => { loadComments(); }, [task.id]); // eslint-disable-line
+
+  const toggleStep = async (i) => {
+    if (!mine && !isAdmin) return;
+    const next = cl.map((s, j) => j === i ? { ...s, done: !s.done } : s);
+    await updateRow("tasks", task.id, { checklist: JSON.stringify(next) }, user.name);
+    reload();
+  };
+
+  const addComment = async () => {
+    if ((!body.trim() && !file) || busy) return;
+    setBusy(true);
+    let file_url = null, file_name = null;
+    if (file) { const up = await uploadFile(file); if (up) { file_url = up.url; file_name = up.name; } }
+    await insertRow("task_comments", { task_id: task.id, author: user.name, is_admin: isAdmin, body: body.trim() || null, file_url, file_name }, user.name);
+    setBody(""); setFile(null); setBusy(false); loadComments();
+  };
+
+  const changeStatus = async (status, extra = {}) => { await updateRow("tasks", task.id, { status, ...extra }, user.name); reload(); };
+
+  const sendForApproval = () => changeStatus("onay_bekliyor");
+  const approve = () => changeStatus("tamamlandi", { approved_by: user.name, approved_at: new Date().toISOString(), reject_note: null });
+  const reject = () => { const note = window.prompt("Revize gerekçesi (personele iletilecek):"); if (note !== null) changeStatus("revize", { reject_note: note || "Revize gerekli" }); };
+
+  return (
+    <div style={{ maxWidth: 720, margin: "0 auto" }}>
+      <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost, marginBottom: 14 }}>← Görev listesi</button>
+
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <span style={S.tag(st.soft, st.color)}>{st.label}</span>
+          <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+          {task.due_date && <span style={{ fontSize: 12.5, color: T.sub }}>Termin: {new Date(task.due_date).toLocaleDateString("tr-TR")}</span>}
+        </div>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 19, fontWeight: 800, color: T.ink }}>{task.title}</div>
+        {task.description && <div style={{ fontSize: 14, color: T.sub, marginTop: 6, lineHeight: 1.6 }}>{task.description}</div>}
+        <div style={{ fontSize: 12.5, color: T.faint, marginTop: 8 }}>
+          Atayan: {task.assigned_by} · Atanan: {task.assignee_name}
+          {task.approved_by && ` · Onaylayan: ${task.approved_by}`}
+        </div>
+        {task.status === "revize" && task.reject_note && (
+          <div style={{ marginTop: 10, padding: 12, borderRadius: 10, background: T.redSoft, color: T.red, fontSize: 13 }}>
+            <b>Revize notu:</b> {task.reject_note}
+          </div>
+        )}
+      </div>
+
+      {cl.length > 0 && (
+        <div style={S.card}>
+          <div style={S.h2}>Kontrol listesi ({cl.filter(i => i.done).length}/{cl.length})</div>
+          <div style={{ height: 6, background: "#eef0ef", borderRadius: 3, overflow: "hidden", margin: "8px 0 14px" }}>
+            <div style={{ width: `${cl.length ? (cl.filter(i => i.done).length / cl.length) * 100 : 0}%`, height: "100%", background: T.green }} />
+          </div>
+          {cl.map((s, i) => (
+            <label key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", fontSize: 14, color: s.done ? T.faint : T.ink, cursor: (mine || isAdmin) ? "pointer" : "default", textDecoration: s.done ? "line-through" : "none" }}>
+              <input type="checkbox" checked={s.done} onChange={() => toggleStep(i)} disabled={!mine && !isAdmin} />
+              {s.text}
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* Durum / onay aksiyonları */}
+      <div style={S.card}>
+        <div style={S.h2}>Durum</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          {mine && !isAdmin && (
+            <>
+              {task.status === "yapilacak" && <button onClick={() => changeStatus("devam")} style={{ ...S.btn, background: STATUSES[1].color, color: "#fff" }}>Başla (devam)</button>}
+              {(task.status === "devam" || task.status === "revize") && <button onClick={sendForApproval} style={{ ...S.btn, ...S.btnGreen }}>Bitti — onaya gönder</button>}
+              {task.status === "onay_bekliyor" && <span style={{ fontSize: 13.5, color: T.blue }}>Yönetici onayı bekleniyor…</span>}
+              {task.status === "tamamlandi" && <span style={{ fontSize: 13.5, color: T.green, fontWeight: 600 }}>✓ Tamamlandı ve onaylandı</span>}
+            </>
+          )}
+          {isAdmin && (
+            <>
+              {task.status === "onay_bekliyor" ? (
+                <>
+                  <button onClick={approve} style={{ ...S.btn, ...S.btnGreen }}>Onayla (tamamlandı)</button>
+                  <button onClick={reject} style={{ ...S.btn, ...S.btnRed }}>Revize iste</button>
+                </>
+              ) : (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {STATUSES.filter(s => s.id !== "onay_bekliyor").map(s => (
+                    <button key={s.id} onClick={() => changeStatus(s.id)} style={{
+                      ...S.btn, padding: "7px 12px", fontSize: 12.5,
+                      background: task.status === s.id ? s.color : s.soft, color: task.status === s.id ? "#fff" : s.color,
+                    }}>{s.label}</button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Yorumlar + dosyalar */}
+      <div style={S.card}>
+        <div style={S.h2}>Yorumlar ve dosyalar</div>
+        <div style={{ margin: "12px 0" }}>
+          {comments.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.faint, padding: "10px 0" }}>Henüz yorum yok.</div>
+          ) : comments.map(c => (
+            <div key={c.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 13.5, color: c.is_admin ? T.blue : T.ink }}>{c.author}{c.is_admin ? " · Yönetici" : ""}</span>
+                <span style={{ fontSize: 12, color: T.faint }}>{new Date(c.created_at).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+              {c.body && <div style={{ fontSize: 14, color: T.ink, marginTop: 3 }}>{c.body}</div>}
+              {c.file_url && (
+                <a href={c.file_url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 6, fontSize: 13, color: T.blue, textDecoration: "none", background: T.blueSoft, padding: "6px 12px", borderRadius: 8 }}>
+                  📎 {c.file_name || "dosya"}
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <textarea style={{ ...S.input, height: 64, resize: "vertical" }} placeholder="Yorum yazın…" value={body} onChange={e => setBody(e.target.value)} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, flex: 1 }} />
+          <button onClick={addComment} disabled={(!body.trim() && !file) || busy} style={{ ...S.btn, ...S.btnGreen, opacity: ((!body.trim() && !file) || busy) ? 0.4 : 1 }}>
+            {busy ? "Gönderiliyor…" : "Gönder"}
+          </button>
+        </div>
+        {!isOnline && <div style={{ fontSize: 12, color: T.amber, marginTop: 8 }}>Yerel modda dosya yüklenmez (Supabase gerekli).</div>}
+      </div>
+    </div>
+  );
+}
+
 
 /* ═══════════ RAPOR ═══════════ */
 function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
