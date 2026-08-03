@@ -1102,6 +1102,45 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
 }
 
 
+/* ═══════════ QR KODLAR ═══════════ */
+function QRManager({ zones = [] }) {
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={S.h2}>Bölge QR kodları</div>
+            <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.65 }}>
+              Her bölge için otomatik QR kod üretilir. Yazdırıp alan girişlerine asın. Personel telefonla
+              okuttuğunda sistem o bölge seçili açılır; kendi PIN'i ile giriş yaptığı için kayıt otomatik onun adına oluşur.
+              Yeni bölge eklemek için <b>Bölgeler</b> sekmesini kullanın — QR kod anında burada görünür.
+            </div>
+          </div>
+          {zones.length > 0 && <button onClick={() => window.print()} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0 }}>Tümünü yazdır</button>}
+        </div>
+      </div>
+      {zones.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", padding: 40, color: T.faint }}>
+          Henüz bölge yok. <b>Bölgeler</b> sekmesinden bölge ekleyin, QR kodlar otomatik oluşsun.
+        </div>
+      ) : (
+        <div className="print-area" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16 }}>
+          {zones.map(z => (
+            <div key={z.id} style={{ ...S.card, marginBottom: 0, textAlign: "center", pageBreakInside: "avoid" }}>
+              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 15, color: T.ink }}>{z.name}</div>
+              <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>{z.id}{z.area ? ` · ${z.area}` : ""}</div>
+              <div style={{ background: "#fff", display: "inline-block", padding: 12, borderRadius: 12, border: `1px solid ${T.line}` }}>
+                <QRCodeSVG value={`${APP_URL}/?zone=${z.id}`} size={150} level="M" fgColor={T.ink} />
+              </div>
+              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: T.green }}>Temizlik kaydı için okutun</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════ BÖLGE YÖNETİMİ (yalnız yönetici) ═══════════ */
 function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
   const [name, setName] = useState("");
