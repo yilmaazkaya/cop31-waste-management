@@ -55,7 +55,7 @@ const ALL_TABS = [
   { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
-  { id: "unvan",     label: "Görev/Unvan", desc: "Personel görevlerini yönet", admin: true },
+  { id: "unvan",     label: "Görev & Departman", desc: "Unvan ve departmanları yönet", admin: true },
   { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
   { id: "qr",        label: "QR kodlar",   desc: "QR üret ve yazdır", admin: true },
   { id: "hedef",     label: "Hedefler",    desc: "ISO 20121 hedefleri", admin: true },
@@ -188,13 +188,14 @@ function App({ user, logout }) {
   const [zones, setZones] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [depts, setDepts] = useState([]);
   const [qrZone, setQrZone] = useState(null);
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z, tk, jr] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk, jr, dp] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
       fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
-      fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"),
+      fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"), fetchAll("departments"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -205,6 +206,7 @@ function App({ user, logout }) {
     setTasks(tk.filter(x => x.active !== false));
     const jrActive = jr.filter(x => x.active !== false);
     setRoles(jrActive.length > 0 ? jrActive : FALLBACK_ROLES.map(n => ({ name: n })));
+    setDepts(dp.filter(x => x.active !== false));
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -227,7 +229,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, tasks, roles, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, roles, depts, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -298,6 +300,49 @@ function App({ user, logout }) {
       </main>
     </div>
   );
+}
+
+/* ── Departman / unvan filtre çubuğu (tüm ekranlarda ortak) ── */
+function FilterBar({ depts = [], roles = [], dept, setDept, role, setRole, extra, note }) {
+  const deptNames = depts.map(d => d.name);
+  const roleNames = roles.map(r => r.name);
+  const active = (dept && dept !== "hepsi") || (role && role !== "hepsi");
+  return (
+    <div style={{ ...S.card, padding: 14, marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Filtre</span>
+      {deptNames.length > 0 && (
+        <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 160, padding: "8px 11px", fontSize: 13 }} value={dept} onChange={e => setDept(e.target.value)}>
+          <option value="hepsi">Tüm departmanlar</option>
+          {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+          <option value="__yok">— Departmansız —</option>
+        </select>
+      )}
+      {roleNames.length > 0 && (
+        <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "8px 11px", fontSize: 13 }} value={role} onChange={e => setRole(e.target.value)}>
+          <option value="hepsi">Tüm görevler</option>
+          {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+      )}
+      {extra}
+      {active && (
+        <button onClick={() => { setDept("hepsi"); setRole("hepsi"); }} style={{ ...S.btn, padding: "7px 13px", fontSize: 12.5, ...S.btnGhost }}>
+          Temizle
+        </button>
+      )}
+      {note && <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>{note}</span>}
+    </div>
+  );
+}
+
+/* Bir personelin filtreye uyup uymadığı */
+function staffMatches(s, dept, role) {
+  if (!s) return false;
+  if (dept && dept !== "hepsi") {
+    if (dept === "__yok") { if (s.department) return false; }
+    else if (s.department !== dept) return false;
+  }
+  if (role && role !== "hepsi" && s.role !== role) return false;
+  return true;
 }
 
 /* ═══════════ GENEL DURUM ═══════════ */
@@ -753,20 +798,24 @@ function Incidents({ user, zones = [], incidents, reload }) {
 }
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
-function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
+function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
   const roleNames = roles.length > 0 ? roles.map(r => r.name) : FALLBACK_ROLES;
+  const deptNames = depts.map(d => d.name);
   const firstRole = roleNames[0] || "Temizlik";
-  const [f, setF] = useState({ name: "", role: firstRole, shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
+  const [f, setF] = useState({ name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [editId, setEditId] = useState(null);
   const [e_, setE_] = useState({});
   const setE = (k, v) => setE_(p => ({ ...p, [k]: v }));
+  const [fDept, setFDept] = useState("hepsi");
+  const [fRole, setFRole] = useState("hepsi");
+  const shown = staff.filter(s => staffMatches(s, fDept, fRole));
 
   const add = async () => {
     if (!f.name.trim() || f.pin.length !== 4) return;
     const { perms, ...rest } = f;
     await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
-    setF({ name: "", role: firstRole, shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
+    setF({ name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] });
     reload();
   };
 
@@ -775,13 +824,13 @@ function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
     setEditId(s.id);
-    setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", email: s.email || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
+    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift, phone: s.phone || "", email: s.email || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
   };
   const cancelEdit = () => { setEditId(null); setE_({}); };
   const saveEdit = async (s) => {
     if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
     await updateRow("staff", s.id, {
-      name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null, email: e_.email || null,
+      name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift, phone: e_.phone || null, email: e_.email || null,
       pin: e_.pin, is_admin: e_.is_admin, permissions: JSON.stringify(e_.perms || []),
     }, user.name);
     cancelEdit(); reload();
@@ -840,6 +889,11 @@ function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
         <select style={S.input} value={f.role} onChange={e => roleChanged("new", e.target.value)}>
           {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
+        <label style={S.label}>Departman</label>
+        <select style={S.input} value={f.department} onChange={e => set("department", e.target.value)}>
+          <option value="">— Seçilmedi —</option>
+          {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
         <label style={S.label}>Vardiya</label>
         <select style={S.input} value={f.shift} onChange={e => set("shift", e.target.value)}>
           {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -866,9 +920,25 @@ function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
       </div>
 
       <div style={S.card}>
-        <div style={S.h2}>Ekip ({staff.length})</div>
+        <div style={S.h2}>Ekip ({shown.length}{shown.length !== staff.length ? ` / ${staff.length}` : ""})</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "12px 0 4px" }}>
+          {deptNames.length > 0 && (
+            <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "7px 10px", fontSize: 13 }} value={fDept} onChange={e => setFDept(e.target.value)}>
+              <option value="hepsi">Tüm departmanlar</option>
+              {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+              <option value="__yok">— Departmansız —</option>
+            </select>
+          )}
+          <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 140, padding: "7px 10px", fontSize: 13 }} value={fRole} onChange={e => setFRole(e.target.value)}>
+            <option value="hepsi">Tüm görevler</option>
+            {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          {(fDept !== "hepsi" || fRole !== "hepsi") && (
+            <button onClick={() => { setFDept("hepsi"); setFRole("hepsi"); }} style={{ ...S.btn, padding: "7px 12px", fontSize: 12.5, ...S.btnGhost }}>Temizle</button>
+          )}
+        </div>
         <div style={{ marginTop: 10 }}>
-          {staff.map(s => (
+          {shown.map(s => (
             <div key={s.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
               {editId === s.id ? (
                 <div>
@@ -881,6 +951,10 @@ function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
                       {SHIFTS.map(x => <option key={x} value={x}>{x}</option>)}
                     </select>
                   </div>
+                  <select style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.department || ""} onChange={ev => setE("department", ev.target.value)}>
+                    <option value="">— Departman seçilmedi —</option>
+                    {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.phone} onChange={ev => setE("phone", ev.target.value)} placeholder="Telefon" />
                     <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} maxLength={4} inputMode="numeric" value={e_.pin} onChange={ev => setE("pin", ev.target.value.replace(/\D/g, ""))} placeholder="PIN (4 hane)" />
@@ -903,7 +977,7 @@ function Personnel({ user, staff, roles = [], cleanLogs, reload }) {
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{s.name}{s.is_admin ? " · Yönetici" : ""}</div>
-                    <div style={{ fontSize: 12.5, color: T.sub }}>{s.role} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
+                    <div style={{ fontSize: 12.5, color: T.sub }}>{s.role}{s.department ? ` · ${s.department}` : ""} · {s.shift}{s.phone ? ` · ${s.phone}` : ""}</div>
                     <div style={{ fontSize: 11.5, color: T.faint, marginTop: 2 }}>
                       Ekranlar: {s.is_admin ? "Tümü" : allowedTabsFor(s).map(id => ALL_TABS.find(t => t.id === id)?.label).filter(Boolean).join(", ") || "—"}
                     </div>
@@ -1147,94 +1221,103 @@ function Targets({ user, targets, reload }) {
 }
 
 /* ═══════════ GÖREV / UNVAN YÖNETİMİ (yalnız yönetici) ═══════════ */
-function RolesManager({ user, roles = [], staff, reload }) {
+function RolesManager({ user, roles = [], depts = [], staff, reload }) {
+  if (!isOnline) {
+    return (
+      <div style={{ ...S.card, maxWidth: 560, margin: "0 auto" }}>
+        <div style={S.h2}>Görev & Departman yönetimi</div>
+        <div style={{ fontSize: 13.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 14 }}>
+          Yalnız merkezi modda yönetilir. Supabase'de schema_roles.sql ve schema_departments.sql çalıştırılmalı.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+      <LookupManager
+        user={user} reload={reload} staff={staff}
+        table="job_roles" items={roles.filter(r => r.id)}
+        title="Görev / Unvan" hint="Personele atanacak unvanlar (örn: Vinç Operatörü, Güvenlik)."
+        placeholder="Örn: Vinç Operatörü" usedBy={(s, name) => s.role === name}
+        usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin."
+      />
+      <LookupManager
+        user={user} reload={reload} staff={staff}
+        table="departments" items={depts}
+        title="Departman" hint="Ekip birimleri (örn: Lojistik, Çevre & Denetim). Filtrelemede kullanılır."
+        placeholder="Örn: Lojistik" usedBy={(s, name) => s.department === name}
+        usedMsg="departmanı bazı personelde kullanılıyor. Önce o kişilerin departmanını değiştirin."
+      />
+    </div>
+  );
+}
+
+/* Görev ve departman için ortak ekle/düzenle/sil bileşeni */
+function LookupManager({ user, reload, staff, table, items, title, hint, placeholder, usedBy, usedMsg }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editName, setEditName] = useState("");
 
-  const dbRoles = roles.filter(r => r.id); // sadece veritabanındakiler (yedek listenin id'si yok)
-
   const add = async () => {
     if (!name.trim() || busy) return;
-    if (dbRoles.some(r => r.name.toLowerCase() === name.trim().toLowerCase())) { alert("Bu görev zaten var."); return; }
+    if (items.some(r => r.name.toLowerCase() === name.trim().toLowerCase())) { alert("Bu kayıt zaten var."); return; }
     setBusy(true);
-    await insertRow("job_roles", { name: name.trim() }, user.name);
+    await insertRow(table, { name: name.trim() }, user.name);
     setName(""); setBusy(false); reload();
   };
-
   const startEdit = (r) => { setEditId(r.id); setEditName(r.name); };
   const cancelEdit = () => { setEditId(null); setEditName(""); };
   const saveEdit = async (r) => {
     if (!editName.trim()) return;
-    await updateRow("job_roles", r.id, { name: editName.trim() }, user.name);
+    await updateRow(table, r.id, { name: editName.trim() }, user.name);
     cancelEdit(); reload();
   };
   const remove = async (r) => {
-    const used = staff.some(s => s.role === r.name);
-    if (used) { alert(`"${r.name}" görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin.`); return; }
-    if (!window.confirm(`"${r.name}" görevi silinsin mi?`)) return;
-    await deactivateRow("job_roles", r.id, user.name);
+    if (staff.some(s => usedBy(s, r.name))) { alert(`"${r.name}" ${usedMsg}`); return; }
+    if (!window.confirm(`"${r.name}" silinsin mi?`)) return;
+    await deactivateRow(table, r.id, user.name);
     reload();
   };
 
-  if (!isOnline) {
-    return (
-      <div style={{ ...S.card, maxWidth: 560, margin: "0 auto" }}>
-        <div style={S.h2}>Görev / Unvan yönetimi</div>
-        <div style={{ fontSize: 13.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 14 }}>
-          Görevler yalnız merkezi modda yönetilir. Supabase'de schema_roles.sql çalıştırılmalı.
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, alignItems: "start" }}>
-      <div style={S.card}>
-        <div style={S.h2}>Yeni görev / unvan</div>
-        <div style={S.sub}>Personele atanacak görevleri buradan yönetin (örn: Vinç Operatörü, Güvenlik).</div>
-        <label style={S.label}>Görev adı</label>
-        <input style={S.input} placeholder="Örn: Vinç Operatörü" value={name} onChange={e => setName(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && add()} />
-        <button onClick={add} disabled={!name.trim() || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!name.trim() || busy) ? 0.4 : 1 }}>
-          {busy ? "Ekleniyor…" : "Görev ekle"}
+    <div style={S.card}>
+      <div style={S.h2}>{title}</div>
+      <div style={S.sub}>{hint}</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <input style={{ ...S.input, marginBottom: 0 }} placeholder={placeholder} value={name}
+          onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} />
+        <button onClick={add} disabled={!name.trim() || busy} style={{ ...S.btn, ...S.btnGreen, flexShrink: 0, opacity: (!name.trim() || busy) ? 0.4 : 1 }}>
+          Ekle
         </button>
       </div>
 
-      <div style={S.card}>
-        <div style={S.h2}>Görevler ({dbRoles.length})</div>
-        {dbRoles.length === 0 ? (
-          <div style={{ padding: "24px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz görev yok.</div>
-        ) : (
-          <div style={{ marginTop: 10 }}>
-            {dbRoles.map(r => {
-              const count = staff.filter(s => s.role === r.name).length;
-              return (
-                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: `1px solid ${T.line}` }}>
-                  {editId === r.id ? (
-                    <>
-                      <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px", flex: 1 }} value={editName} onChange={e => setEditName(e.target.value)}
-                        onKeyDown={e => e.key === "Enter" && saveEdit(r)} autoFocus />
-                      <button onClick={() => saveEdit(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
-                      <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGhost }}>İptal</button>
-                    </>
-                  ) : (
-                    <>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>{r.name}</div>
-                        <div style={{ fontSize: 12, color: T.faint }}>{count} personel</div>
-                      </div>
-                      <button onClick={() => startEdit(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
-                      <button onClick={() => remove(r)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
-                    </>
-                  )}
+      {items.length === 0 ? (
+        <div style={{ padding: "20px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz kayıt yok.</div>
+      ) : items.map(r => {
+        const count = staff.filter(s => usedBy(s, r.name)).length;
+        return (
+          <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+            {editId === r.id ? (
+              <>
+                <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px", flex: 1 }} value={editName}
+                  onChange={e => setEditName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveEdit(r)} autoFocus />
+                <button onClick={() => saveEdit(r)} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+                <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+              </>
+            ) : (
+              <>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{r.name}</div>
+                  <div style={{ fontSize: 11.5, color: T.faint }}>{count} personel</div>
                 </div>
-              );
-            })}
+                <button onClick={() => startEdit(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                <button onClick={() => remove(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+              </>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })}
     </div>
   );
 }
@@ -1258,10 +1341,17 @@ const statOf = (id) => STATUSES.find(s => s.id === id) || STATUSES[0];
 const priOf = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
 const parseCl = (s) => { try { return JSON.parse(s || "[]"); } catch { return []; } };
 
-function TaskManager({ user, staff, tasks, reload }) {
+function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
   const isAdmin = user.is_admin;
   const [openId, setOpenId] = useState(null);
   const [filter, setFilter] = useState("acik");
+  const [dept, setDept] = useState("hepsi");
+  const [role, setRole] = useState("hepsi");
+
+  const staffIds = useMemo(() => new Set(
+    staff.filter(s => staffMatches(s, dept, role)).map(s => s.id)
+  ), [staff, dept, role]);
+  const filtering = dept !== "hepsi" || role !== "hepsi";
 
   // Ekranı açınca kendine atanan görülmemişleri "görüldü" işaretle
   useEffect(() => {
@@ -1271,7 +1361,8 @@ function TaskManager({ user, staff, tasks, reload }) {
     })();
   }, []); // eslint-disable-line
 
-  const mineOrAll = isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id);
+  const mineOrAll = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id))
+    .filter(t => !filtering || staffIds.has(t.assignee_id));
   const visible = mineOrAll.filter(t => {
     if (filter === "acik") return t.status !== "tamamlandi";
     if (filter === "hepsi") return true;
@@ -1285,8 +1376,13 @@ function TaskManager({ user, staff, tasks, reload }) {
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: isAdmin ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
-      {isAdmin && <NewTaskForm user={user} staff={staff} reload={reload} />}
+    <div>
+      {isAdmin && (
+        <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole}
+          note={filtering ? `${visible.length} görev gösteriliyor` : null} />
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: isAdmin ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
+        {isAdmin && <NewTaskForm user={user} staff={staff} roles={roles} depts={depts} reload={reload} />}
 
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
@@ -1335,18 +1431,22 @@ function TaskManager({ user, staff, tasks, reload }) {
             </div>
           );
         })}
+        </div>
       </div>
     </div>
   );
 }
 
 /* ── Yeni görev formu (kontrol listesi dahil) ── */
-function NewTaskForm({ user, staff, reload }) {
+function NewTaskForm({ user, staff, roles = [], depts = [], reload }) {
   const [f, setF] = useState({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [pickDept, setPickDept] = useState("hepsi");
   const [steps, setSteps] = useState([]);
   const [stepText, setStepText] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const candidates = staff.filter(s => pickDept === "hepsi" || s.department === pickDept);
 
   const addStep = () => { if (stepText.trim()) { setSteps(p => [...p, { text: stepText.trim(), done: false }]); setStepText(""); } };
 
@@ -1357,6 +1457,7 @@ function NewTaskForm({ user, staff, reload }) {
     const row = {
       title: f.title.trim(), description: f.description.trim() || null,
       assignee_id: f.assignee_id, assignee_name: p?.name || "", assigned_by: user.name,
+      department: p?.department || null,
       due_date: f.due_date || null, priority: f.priority, status: "yapilacak",
       checklist: JSON.stringify(steps), notify_email: p?.email || null, seen: false, notified: false,
     };
@@ -1378,9 +1479,15 @@ function NewTaskForm({ user, staff, reload }) {
       <label style={S.label}>Açıklama</label>
       <textarea style={{ ...S.input, height: 64, resize: "vertical" }} placeholder="Detay / talimat…" value={f.description} onChange={e => set("description", e.target.value)} />
       <label style={S.label}>Kime</label>
+      {depts.length > 0 && (
+        <select style={{ ...S.input, marginBottom: 8, fontSize: 13 }} value={pickDept} onChange={e => { setPickDept(e.target.value); set("assignee_id", ""); }}>
+          <option value="hepsi">Tüm departmanlar</option>
+          {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+        </select>
+      )}
       <select style={S.input} value={f.assignee_id} onChange={e => set("assignee_id", e.target.value)}>
         <option value="">Personel seçin</option>
-        {staff.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
+        {candidates.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}{s.department ? ` · ${s.department}` : ""}</option>)}
       </select>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div>
@@ -1577,12 +1684,21 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
 
 
 /* ═══════════ İŞ ANALİZİ (GÖREV DASHBOARD) ═══════════ */
-function TaskAnalytics({ user, staff, tasks = [] }) {
+function TaskAnalytics({ user, staff, tasks = [], depts = [], roles = [] }) {
   const isAdmin = user.is_admin;
   const [range, setRange] = useState(30); // gün
+  const [dept, setDept] = useState("hepsi");
+  const [role, setRole] = useState("hepsi");
+
+  // Filtreye uyan personel kimlikleri
+  const staffIds = useMemo(() => new Set(
+    staff.filter(s => staffMatches(s, dept, role)).map(s => s.id)
+  ), [staff, dept, role]);
+  const filtering = dept !== "hepsi" || role !== "hepsi";
 
   // Yönetici hepsini, personel kendi görevlerini analiz eder
-  const scope = isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id);
+  const scope = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id))
+    .filter(t => !filtering || staffIds.has(t.assignee_id));
 
   const cutoff = useMemo(() => {
     const d = new Date(); d.setDate(d.getDate() - range); d.setHours(0, 0, 0, 0); return d;
@@ -1636,7 +1752,7 @@ function TaskAnalytics({ user, staff, tasks = [] }) {
   })).filter(p => p.toplam > 0);
 
   /* ── Kişi bazlı performans ── */
-  const byPerson = staff.map(s => {
+  const byPerson = staff.filter(s => staffMatches(s, dept, role)).map(s => {
     const mine = scope.filter(t => t.assignee_id === s.id);
     const md = mine.filter(t => t.status === "tamamlandi").length;
     const mo = mine.filter(t => t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0).length;
@@ -1676,15 +1792,27 @@ function TaskAnalytics({ user, staff, tasks = [] }) {
 
   if (total === 0) {
     return (
-      <div style={{ ...S.card, textAlign: "center", padding: 50 }}>
-        <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 8 }}>Henüz analiz edilecek görev yok</div>
-        <div style={{ fontSize: 13.5, color: T.sub }}>İş Takibi sekmesinden görev atandıkça buradaki grafikler dolacak.</div>
+      <div>
+        {isAdmin && <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole} />}
+        <div style={{ ...S.card, textAlign: "center", padding: 50 }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 8 }}>
+            {filtering ? "Bu filtreye uyan görev yok" : "Henüz analiz edilecek görev yok"}
+          </div>
+          <div style={{ fontSize: 13.5, color: T.sub }}>
+            {filtering ? "Filtreyi değiştirin veya temizleyin." : "İş Takibi sekmesinden görev atandıkça buradaki grafikler dolacak."}
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
     <div>
+      {isAdmin && (
+        <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole}
+          note={filtering ? `${staffIds.size} personel · ${scope.length} görev` : null} />
+      )}
+
       {/* Zaman aralığı */}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 12.5, color: T.sub, fontWeight: 600, marginRight: 4 }}>Dönem:</span>
@@ -1824,6 +1952,64 @@ function TaskAnalytics({ user, staff, tasks = [] }) {
         </div>
       </div>
 
+      {/* Departman karşılaştırması */}
+      {isAdmin && depts.length > 0 && (() => {
+        const byDept = depts.map(d => {
+          const ids = new Set(staff.filter(s => s.department === d.name).map(s => s.id));
+          const list = (isAdmin ? tasks : []).filter(t => ids.has(t.assignee_id));
+          const dn = list.filter(t => t.status === "tamamlandi").length;
+          const gec = list.filter(t => t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0).length;
+          return {
+            name: d.name, toplam: list.length, tamamlanan: dn, acik: list.length - dn, geciken: gec,
+            oran: list.length ? Math.round((dn / list.length) * 100) : 0,
+            kisi: staff.filter(s => s.department === d.name).length,
+          };
+        }).filter(d => d.toplam > 0 || d.kisi > 0);
+        if (byDept.length === 0) return null;
+        return (
+          <div style={S.card}>
+            <div style={S.h2}>Departman karşılaştırması</div>
+            <div style={S.sub}>Hangi departman ne kadar iş üstlendi ve bitirdi</div>
+            <ResponsiveContainer width="100%" height={Math.max(180, byDept.length * 48)}>
+              <BarChart data={byDept} layout="vertical" margin={{ left: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                <XAxis type="number" tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: T.ink }} width={120} />
+                <Tooltip contentStyle={S.tooltip} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="tamamlanan" stackId="a" fill={T.green} name="Tamamlanan" />
+                <Bar dataKey="acik" stackId="a" fill={T.amber} name="Açık" radius={[0, 5, 5, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={{ marginTop: 12, overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: `2px solid ${T.line}` }}>
+                    {["Departman", "Personel", "Görev", "Tamamlanan", "Geciken", "Başarı"].map(h => (
+                      <th key={h} style={{ padding: "8px 6px", textAlign: h === "Departman" ? "left" : "center", color: T.sub, fontWeight: 600, fontSize: 12 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {byDept.map(d => (
+                    <tr key={d.name} style={{ borderBottom: `1px solid ${T.line}` }}>
+                      <td style={{ padding: "9px 6px", fontWeight: 600, color: T.ink }}>{d.name}</td>
+                      <td style={{ padding: "9px 6px", textAlign: "center" }}>{d.kisi}</td>
+                      <td style={{ padding: "9px 6px", textAlign: "center" }}>{d.toplam}</td>
+                      <td style={{ padding: "9px 6px", textAlign: "center", color: T.green, fontWeight: 600 }}>{d.tamamlanan}</td>
+                      <td style={{ padding: "9px 6px", textAlign: "center", color: d.geciken > 0 ? T.red : T.faint, fontWeight: d.geciken > 0 ? 700 : 400 }}>{d.geciken}</td>
+                      <td style={{ padding: "9px 6px", textAlign: "center" }}>
+                        <span style={S.tag(d.oran >= 70 ? T.greenSoft : d.oran >= 40 ? T.amberSoft : T.redSoft, d.oran >= 70 ? T.green : d.oran >= 40 ? T.amber : T.red)}>%{d.oran}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Kişi bazlı performans */}
       {isAdmin && byPerson.length > 0 && (
         <div style={S.card}>
@@ -1919,7 +2105,20 @@ function TaskAnalytics({ user, staff, tasks = [] }) {
 }
 
 /* ═══════════ RAPOR ═══════════ */
-function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
+function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks = [], depts = [], roles = [] }) {
+  const [dept, setDept] = useState("hepsi");
+  const [role, setRole] = useState("hepsi");
+  const filtering = dept !== "hepsi" || role !== "hepsi";
+  const names = useMemo(() => new Set(staff.filter(s => staffMatches(s, dept, role)).map(s => s.name)), [staff, dept, role]);
+  const ids = useMemo(() => new Set(staff.filter(s => staffMatches(s, dept, role)).map(s => s.id)), [staff, dept, role]);
+
+  // Filtre uygulanmışsa yalnız o personelin kayıtları
+  cleanLogs = filtering ? cleanLogs.filter(c => names.has(c.staff_name)) : cleanLogs;
+  wasteLogs = filtering ? wasteLogs.filter(w => names.has(w.staff_name)) : wasteLogs;
+  incidents = filtering ? incidents.filter(i => names.has(i.staff_name)) : incidents;
+  const scopedTasks = filtering ? tasks.filter(t => ids.has(t.assignee_id)) : tasks;
+  const shownStaff = staff.filter(s => staffMatches(s, dept, role));
+
   const totalWaste = wasteLogs.reduce((s, w) => s + Number(w.amount), 0);
   const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
   const carbon = wasteLogs.reduce((s, w) => s + carbonOf(w), 0);
@@ -1929,7 +2128,7 @@ function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
   const rows = [
     ["Rapor tarihi", new Date().toLocaleDateString("tr-TR")],
     ["Toplam temizlik kaydı", cleanLogs.length],
-    ["Kayıtlı personel", staff.length],
+    ["Kayıtlı personel", shownStaff.length],
     ["Toplam atık", `${totalWaste.toLocaleString("tr-TR")} kg`],
     ["Geri dönüşüme gönderilen", `${recycled.toLocaleString("tr-TR")} kg`],
     ["Geri dönüşüm oranı / hedef", totalWaste > 0 ? `%${rate} / %${tRate}` : "—"],
@@ -1937,6 +2136,7 @@ function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
     ["Fotoğraflı (kanıtlı) atık kaydı", wasteLogs.filter(w => w.photo_url).length],
     ["UATF'li tehlikeli atık kaydı", wasteLogs.filter(w => w.uatf_no).length],
     ["Toplam olay / açık", `${incidents.length} / ${incidents.filter(i => i.status === "Açık").length}`],
+    ["Görev (toplam / tamamlanan)", `${scopedTasks.length} / ${scopedTasks.filter(t => t.status === "tamamlandi").length}`],
   ];
 
   const exportCSV = () => {
@@ -1946,6 +2146,7 @@ function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
       csv += `Atık;${trDate(w.created_at)};${trTime(w.created_at)};${w.zone};${w.staff_name || ""};${WASTE_TYPES.find(t => t.id === w.type)?.name} → ${w.destination};${w.amount};${w.uatf_no || ""};${w.facility_license || ""};${w.km || 0};${carbonOf(w).toFixed(3)};${w.photo_url || ""}\n`;
     });
     incidents.forEach(i => { csv += `Olay;${trDate(i.created_at)};${trTime(i.created_at)};${i.zone};${i.staff_name || ""};${i.description};;;;;;${i.status}\n`; });
+    scopedTasks.forEach(t => { csv += `Görev;${trDate(t.created_at)};${trTime(t.created_at)};${t.department || ""};${t.assignee_name || ""};${t.title};;;;;;${statOf(t.status).label}\n`; });
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -1955,6 +2156,8 @@ function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto" }}>
+      <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole}
+        note={filtering ? `${shownStaff.length} personel kapsamda` : null} />
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
           <div style={{ flex: 1 }}>
