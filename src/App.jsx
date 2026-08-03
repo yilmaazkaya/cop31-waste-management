@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
-import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, carbonOf, EMISSION } from "./supa.js";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -45,6 +45,7 @@ const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
    Kişiye özel seçim yapılırsa (staff.permissions) o geçerli olur. */
 const ALL_TABS = [
   { id: "dashboard", label: "Genel durum", desc: "Özet, grafikler, uyarılar" },
+  { id: "istakip",   label: "İş Takibi",   desc: "Bana atanan görevler" },
   { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
   { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
   { id: "gorev",     label: "Görevler",    desc: "Bölge sorumlulukları, SLA" },
@@ -57,11 +58,11 @@ const ALL_TABS = [
 ];
 
 const ROLE_TABS = {
-  "Temizlik":       ["saha"],
-  "Atık Toplama":   ["atik"],
-  "Araç Sürücü":    ["atik"],
-  "Denetim":        ["dashboard", "olay", "gorev", "rapor"],
-  "Saha Sorumlusu": ["dashboard", "saha", "atik", "gorev", "olay", "rapor"],
+  "Temizlik":       ["saha", "istakip"],
+  "Atık Toplama":   ["atik", "istakip"],
+  "Araç Sürücü":    ["atik", "istakip"],
+  "Denetim":        ["dashboard", "istakip", "olay", "gorev", "rapor"],
+  "Saha Sorumlusu": ["dashboard", "istakip", "saha", "atik", "gorev", "olay", "rapor"],
 };
 
 /* Bir kullanıcının görebileceği ekranları hesaplar. */
@@ -181,12 +182,14 @@ function App({ user, logout }) {
   const [assignments, setAssignments] = useState([]);
   const [targets, setTargets] = useState([]);
   const [zones, setZones] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [qrZone, setQrZone] = useState(null);
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
-      fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"), fetchAll("zones"),
+      fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
+      fetchAll("zones"), fetchAll("tasks"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -194,6 +197,7 @@ function App({ user, logout }) {
     setIncidents(i.filter(x => x.active !== false));
     setAssignments(a.filter(x => x.active !== false));
     setTargets(t);
+    setTasks(tk.filter(x => x.active !== false));
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -216,7 +220,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -239,13 +243,24 @@ function App({ user, logout }) {
         </div>
 
         <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: 10, overflowY: "auto", flex: 1 }}>
-          {NAV.map(n => (
-            <button key={n.id} onClick={() => setTab(n.id)} style={{
-              ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left",
-              background: tab === n.id ? T.greenSoft : "transparent",
-              color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
-            }}>{n.label}</button>
-          ))}
+          {NAV.map(n => {
+            const badge = n.id === "istakip"
+              ? tasks.filter(t => t.assignee_id === user.id && !t.seen && t.status !== "tamamlandi").length
+              : 0;
+            return (
+              <button key={n.id} onClick={() => setTab(n.id)} style={{
+                ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left",
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                background: tab === n.id ? T.greenSoft : "transparent",
+                color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
+              }}>
+                <span>{n.label}</span>
+                {badge > 0 && (
+                  <span style={{ background: T.red, color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>{badge}</span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         <div style={{ padding: 10, borderTop: `1px solid ${T.line}` }}>
@@ -260,6 +275,7 @@ function App({ user, logout }) {
       <main style={{ flex: 1, minWidth: 0, maxWidth: 1000, margin: "0 auto", padding: "26px 20px 60px" }}>
         {allowed.includes(tab) && (<>
           {tab === "dashboard" && <Dashboard {...ctx} />}
+          {tab === "istakip" && <TaskManager {...ctx} />}
           {tab === "saha" && <FieldEntry {...ctx} />}
           {tab === "atik" && <WasteEntry {...ctx} />}
           {tab === "gorev" && <Assignments {...ctx} />}
@@ -703,7 +719,7 @@ function Incidents({ user, zones = [], incidents, reload }) {
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
 function Personnel({ user, staff, cleanLogs, reload }) {
-  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
+  const [f, setF] = useState({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [editId, setEditId] = useState(null);
   const [e_, setE_] = useState({});
@@ -713,7 +729,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
     if (!f.name.trim() || f.pin.length !== 4) return;
     const { perms, ...rest } = f;
     await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
-    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
+    setF({ name: "", role: ROLES[0], shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[ROLES[0]] || [] });
     reload();
   };
 
@@ -722,13 +738,13 @@ function Personnel({ user, staff, cleanLogs, reload }) {
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
     setEditId(s.id);
-    setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
+    setE_({ name: s.name, role: s.role, shift: s.shift, phone: s.phone || "", email: s.email || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
   };
   const cancelEdit = () => { setEditId(null); setE_({}); };
   const saveEdit = async (s) => {
     if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
     await updateRow("staff", s.id, {
-      name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null,
+      name: e_.name.trim(), role: e_.role, shift: e_.shift, phone: e_.phone || null, email: e_.email || null,
       pin: e_.pin, is_admin: e_.is_admin, permissions: JSON.stringify(e_.perms || []),
     }, user.name);
     cancelEdit(); reload();
@@ -801,6 +817,8 @@ function Personnel({ user, staff, cleanLogs, reload }) {
             <input style={S.input} maxLength={4} inputMode="numeric" placeholder="****" value={f.pin} onChange={e => set("pin", e.target.value.replace(/\D/g, ""))} />
           </div>
         </div>
+        <label style={S.label}>E-posta (görev bildirimi için)</label>
+        <input style={S.input} type="email" placeholder="ornek@eposta.com" value={f.email || ""} onChange={e => set("email", e.target.value)} />
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: T.sub, marginBottom: 14, cursor: "pointer" }}>
           <input type="checkbox" checked={f.is_admin} onChange={e => set("is_admin", e.target.checked)} />
           Yönetici yetkisi (tüm ekranları görür)
@@ -830,6 +848,7 @@ function Personnel({ user, staff, cleanLogs, reload }) {
                     <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} value={e_.phone} onChange={ev => setE("phone", ev.target.value)} placeholder="Telefon" />
                     <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} maxLength={4} inputMode="numeric" value={e_.pin} onChange={ev => setE("pin", ev.target.value.replace(/\D/g, ""))} placeholder="PIN (4 hane)" />
                   </div>
+                  <input style={{ ...S.input, marginBottom: 8, padding: "7px 10px" }} type="email" value={e_.email} onChange={ev => setE("email", ev.target.value)} placeholder="E-posta (görev bildirimi)" />
                   <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.sub, marginBottom: 10, cursor: "pointer" }}>
                     <input type="checkbox" checked={e_.is_admin} onChange={ev => setE("is_admin", ev.target.checked)} />
                     Yönetici yetkisi
@@ -1085,6 +1104,168 @@ function Targets({ user, targets, reload }) {
       <div style={{ ...S.card, fontSize: 12.5, color: T.faint, lineHeight: 1.6 }}>
         Karbon faktörleri: geri dönüşüm {EMISSION["Geri Dönüşüm Tesisi"]}, kompost {EMISSION["Kompost Alanı"]}, depolama {EMISSION["Düzenli Depolama"]} kg CO₂e/kg;
         taşıma {EMISSION.TRANSPORT_PER_TON_KM} kg CO₂e/ton-km. Resmî raporlamada ulusal faktörlerle doğrulanmalıdır.
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════ İŞ TAKİBİ (GÖREV YÖNETİMİ) ═══════════ */
+const PRIORITIES = [
+  { id: "dusuk", label: "Düşük", color: "#2f6fb2" },
+  { id: "orta", label: "Orta", color: "#b07d1e" },
+  { id: "yuksek", label: "Yüksek", color: "#b03030" },
+];
+const STATUSES = [
+  { id: "yapilacak", label: "Yapılacak", color: "#5c6b63", soft: "#eef0ef" },
+  { id: "devam", label: "Devam ediyor", color: "#b07d1e", soft: "#faf3e3" },
+  { id: "tamamlandi", label: "Tamamlandı", color: "#1e6b45", soft: "#e6f2ec" },
+];
+
+function TaskManager({ user, staff, tasks, reload }) {
+  const isAdmin = user.is_admin;
+  const [f, setF] = useState({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState("hepsi");
+
+  // Atanan kişi bu ekranı açınca kendine ait görevleri "görüldü" işaretle
+  useEffect(() => {
+    (async () => {
+      const mine = tasks.filter(t => t.assignee_id === user.id && !t.seen);
+      if (mine.length) {
+        for (const t of mine) await updateRow("tasks", t.id, { seen: true }, user.name);
+        reload();
+      }
+    })();
+  }, []); // eslint-disable-line
+
+  const create = async () => {
+    if (!f.title.trim() || !f.assignee_id || busy) return;
+    setBusy(true);
+    const p = staff.find(s => s.id === f.assignee_id);
+    const row = {
+      title: f.title.trim(), description: f.description.trim() || null,
+      assignee_id: f.assignee_id, assignee_name: p?.name || "",
+      assigned_by: user.name, due_date: f.due_date || null,
+      priority: f.priority, status: "yapilacak",
+      notify_email: p?.email || null, seen: false, notified: false,
+    };
+    const saved = await insertRow("tasks", row, user.name);
+    // E-posta bildirimi (uç nokta yoksa sessizce atlanır)
+    if (p?.email) {
+      const ok = await sendTaskEmail({ to: p.email, name: p.name, title: row.title, due: row.due_date, priority: row.priority, assignedBy: user.name });
+      if (ok && saved?.id) await updateRow("tasks", saved.id, { notified: true }, user.name);
+    }
+    setF({ title: "", description: "", assignee_id: "", due_date: "", priority: "orta" });
+    setBusy(false); reload();
+  };
+
+  const setStatus = async (t, status) => { await updateRow("tasks", t.id, { status }, user.name); reload(); };
+  const removeTask = async (t) => { if (window.confirm("Görev kaldırılsın mı?")) { await deactivateRow("tasks", t.id, user.name); reload(); } };
+
+  // Yönetici hepsini, personel sadece kendine atananı görür
+  const visible = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id))
+    .filter(t => filter === "hepsi" ? true : t.status === filter)
+    .slice().reverse();
+
+  const stat = (id) => STATUSES.find(s => s.id === id) || STATUSES[0];
+  const pri = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: isAdmin ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
+      {isAdmin && (
+        <div style={S.card}>
+          <div style={S.h2}>Yeni görev ata</div>
+          <div style={S.sub}>Görev atanınca kişiye uygulama içi bildirim (ve e-posta ayarlıysa e-posta) gider.</div>
+          <label style={S.label}>Başlık</label>
+          <input style={S.input} placeholder="Örn: Z04 yemek alanı denetimi" value={f.title} onChange={e => set("title", e.target.value)} />
+          <label style={S.label}>Açıklama</label>
+          <textarea style={{ ...S.input, height: 70, resize: "vertical" }} placeholder="Detay…" value={f.description} onChange={e => set("description", e.target.value)} />
+          <label style={S.label}>Kime</label>
+          <select style={S.input} value={f.assignee_id} onChange={e => set("assignee_id", e.target.value)}>
+            <option value="">Personel seçin</option>
+            {staff.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
+          </select>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={S.label}>Termin</label>
+              <input style={S.input} type="date" value={f.due_date} onChange={e => set("due_date", e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Öncelik</label>
+              <select style={S.input} value={f.priority} onChange={e => set("priority", e.target.value)}>
+                {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <button onClick={create} disabled={!f.title.trim() || !f.assignee_id || busy}
+            style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.title.trim() || !f.assignee_id || busy) ? 0.4 : 1 }}>
+            {busy ? "Atanıyor…" : "Görevi ata"}
+          </button>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={S.h2}>{isAdmin ? "Tüm görevler" : "Bana atanan görevler"}</div>
+            <div style={{ fontSize: 13, color: T.sub }}>{visible.length} görev</div>
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {[{ id: "hepsi", label: "Hepsi" }, ...STATUSES].map(s => (
+              <button key={s.id} onClick={() => setFilter(s.id)} style={{
+                ...S.btn, padding: "6px 12px", fontSize: 12.5,
+                background: filter === s.id ? T.green : "#fbfcfb",
+                color: filter === s.id ? "#fff" : T.sub,
+                border: `1.5px solid ${filter === s.id ? T.green : T.line}`,
+              }}>{s.label}</button>
+            ))}
+          </div>
+        </div>
+
+        {visible.length === 0 ? (
+          <div style={{ padding: "40px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
+            {isAdmin ? "Henüz görev atanmadı." : "Size atanmış görev yok."}
+          </div>
+        ) : (
+          <div>
+            {visible.map(t => {
+              const st = stat(t.status), pr = pri(t.priority);
+              const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < new Date(new Date().toDateString());
+              return (
+                <div key={t.id} style={{ padding: "14px 0", borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14.5, color: T.ink }}>{t.title}</div>
+                      {t.description && <div style={{ fontSize: 13, color: T.sub, marginTop: 3 }}>{t.description}</div>}
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
+                        <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+                        {isAdmin && <span style={{ fontSize: 12.5, color: T.sub }}>→ {t.assignee_name}</span>}
+                        {t.due_date && <span style={{ fontSize: 12.5, color: overdue ? T.red : T.faint, fontWeight: overdue ? 700 : 400 }}>Termin: {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " (gecikti)" : ""}</span>}
+                        <span style={{ fontSize: 12, color: T.faint }}>· Atayan: {t.assigned_by}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {STATUSES.map(s => (
+                          <button key={s.id} onClick={() => setStatus(t, s.id)} style={{
+                            ...S.btn, padding: "5px 10px", fontSize: 11.5,
+                            background: t.status === s.id ? s.color : s.soft,
+                            color: t.status === s.id ? "#fff" : s.color,
+                            border: "none",
+                          }}>{s.label}</button>
+                        ))}
+                      </div>
+                      {isAdmin && (
+                        <button onClick={() => removeTask(t)} style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Kaldır</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

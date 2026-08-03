@@ -116,3 +116,24 @@ export function carbonOf(w) {
   const transport = ((w.km || 0) * (w.amount || 0) / 1000) * EMISSION.TRANSPORT_PER_TON_KM;
   return disposal + transport;
 }
+
+/* ── E-POSTA BİLDİRİMİ (Resend) ──
+   Vercel'e VITE_RESEND_KEY girilirse görev atandığında e-posta gider.
+   Girilmezse sessizce atlanır (uygulama içi bildirim yine çalışır).
+   Not: Tarayıcıdan doğrudan Resend çağrısı CORS nedeniyle üretimde
+   bir Vercel Serverless fonksiyonu (/api/send) üzerinden yapılmalıdır;
+   bu fonksiyon o uç noktayı çağırır. */
+export async function sendTaskEmail({ to, name, title, due, priority, assignedBy }) {
+  if (!to) return false;
+  try {
+    const res = await fetch("/api/send-mail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, name, title, due, priority, assignedBy }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.warn("E-posta bildirimi atlandı (uç nokta yok):", e.message);
+    return false;
+  }
+}
