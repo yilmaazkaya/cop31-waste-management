@@ -526,6 +526,12 @@ function FieldEntry({ user, zones = [], cleanLogs, reload, qrZone }) {
                 <span style={{ fontWeight: 600, color: T.ink }}>{l.staff_name}</span>
                 <span style={{ color: T.sub }}>{l.zone}</span>
                 <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
+                {(user.is_admin || l.staff_name === user.name) && (
+                  <button onClick={async () => {
+                    if (!window.confirm(`${l.zone} — ${l.action} kaydı silinsin mi?`)) return;
+                    await hardDeleteRow("clean_logs", l.id, user.name); reload();
+                  }} title="Kaydı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
+                )}
               </div>
             ))}
           </div>
@@ -541,6 +547,7 @@ function WasteEntry({ user, zones = [], wasteLogs, reload }) {
   const [photo, setPhoto] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
 
   const isHaz = f.type === "hazardous";
@@ -627,9 +634,19 @@ function WasteEntry({ user, zones = [], wasteLogs, reload }) {
 
       {wasteLogs.length > 0 && (
         <div style={S.card}>
-          <div style={S.h2}>Son atık kayıtları</div>
-          <div style={{ marginTop: 10 }}>
-            {wasteLogs.slice(-10).reverse().map(l => {
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: 1 }}>
+              <div style={S.h2}>Son atık kayıtları</div>
+              <div style={{ fontSize: 12.5, color: T.sub }}>Toplam {wasteLogs.length} kayıt</div>
+            </div>
+            {wasteLogs.length > 10 && (
+              <button onClick={() => setShowAll(v => !v)} style={{ ...S.btn, padding: "7px 13px", fontSize: 12.5, ...S.btnGhost }}>
+                {showAll ? "Son 10'u göster" : `Tümünü göster (${wasteLogs.length})`}
+              </button>
+            )}
+          </div>
+          <div style={{ marginTop: 10, maxHeight: showAll ? 520 : "none", overflowY: showAll ? "auto" : "visible" }}>
+            {(showAll ? wasteLogs.slice() : wasteLogs.slice(-10)).reverse().map(l => {
               const wt = WASTE_TYPES.find(t => t.id === l.type);
               return (
                 <div key={l.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13.5 }}>
@@ -639,6 +656,12 @@ function WasteEntry({ user, zones = [], wasteLogs, reload }) {
                     <span style={{ color: T.sub }}>{l.zone} → {l.destination}</span>
                     {l.photo_url && <a href={l.photo_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: T.blue }}>📷 kanıt</a>}
                     <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
+                    {(user.is_admin || l.staff_name === user.name) && (
+                      <button onClick={async () => {
+                        if (!window.confirm(`${l.amount} kg ${wt.name} kaydı silinsin mi?`)) return;
+                        await hardDeleteRow("waste_logs", l.id, user.name); reload();
+                      }} title="Kaydı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
+                    )}
                   </div>
                   {(l.uatf_no || l.facility_license) && (
                     <div style={{ fontSize: 12, color: T.faint, marginTop: 3 }}>
@@ -777,11 +800,17 @@ function Incidents({ user, zones = [], incidents, reload }) {
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={S.tag(SEV[i.severity].soft, SEV[i.severity].color)}>{SEV[i.severity].label}</span>
                   <span style={{ fontSize: 13, color: T.sub }}>{i.zone} · {i.staff_name}</span>
-                  <span style={{ marginLeft: "auto" }}>
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
                     {i.status === "Açık" ? (
                       <button onClick={async () => { await updateRow("incidents", i.id, { status: "Kapatıldı" }, user.name); reload(); }}
                         style={{ ...S.btn, padding: "5px 12px", fontSize: 12, background: T.greenSoft, color: T.green }}>Kapat</button>
                     ) : <span style={S.tag("#eef0ef", T.faint)}>Kapatıldı</span>}
+                    {(user.is_admin || i.staff_name === user.name) && (
+                      <button onClick={async () => {
+                        if (!window.confirm("Bu olay kaydı silinsin mi?")) return;
+                        await hardDeleteRow("incidents", i.id, user.name); reload();
+                      }} title="Kaydı sil" style={{ ...S.btn, padding: "5px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+                    )}
                   </span>
                 </div>
                 <div style={{ fontSize: 14, color: T.ink, marginTop: 6 }}>{i.description}</div>
