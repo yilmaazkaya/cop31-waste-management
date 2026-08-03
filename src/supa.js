@@ -99,13 +99,32 @@ function shrink(file, maxW, q) {
   });
 }
 
+/* Dosya boyut sınırları (deponuz şişmesin diye).
+   Resimler zaten küçültülür; belgeler olduğu gibi yüklenir, o yüzden sınırlı. */
+export const FILE_LIMITS = {
+  IMAGE_MAX_MB: 15,      // yükleme öncesi ham resim üst sınırı (küçültülecek)
+  DOC_MAX_MB: 10,        // belge (PDF/Word/Excel…) üst sınırı
+  IMG_MAX_WIDTH: 1200,   // küçültme genişliği
+  IMG_QUALITY: 0.65,     // sıkıştırma (0-1)
+};
+
 /* Her tür dosya yükleme (görev ekleri: PDF, Word, Excel, resim…).
-   Resimse küçültülür; diğer türler olduğu gibi yüklenir.
-   'gorev' bucket'ına yazar, herkese açık URL döner. */
+   Resimse küçültülüp sıkıştırılır; belge boyut sınırını aşarsa reddedilir. */
 export async function uploadFile(file, bucket = "gorev") {
   if (!supa || !file) return null;
   const isImg = file.type.startsWith("image/");
-  const body = isImg ? await shrink(file, 1400, 0.75) : file;
+  const mb = file.size / (1024 * 1024);
+
+  if (isImg && mb > FILE_LIMITS.IMAGE_MAX_MB) {
+    alert(`Fotoğraf çok büyük (${mb.toFixed(1)} MB). En fazla ${FILE_LIMITS.IMAGE_MAX_MB} MB olmalı.`);
+    return null;
+  }
+  if (!isImg && mb > FILE_LIMITS.DOC_MAX_MB) {
+    alert(`Belge çok büyük (${mb.toFixed(1)} MB). En fazla ${FILE_LIMITS.DOC_MAX_MB} MB olmalı.`);
+    return null;
+  }
+
+  const body = isImg ? await shrink(file, FILE_LIMITS.IMG_MAX_WIDTH, FILE_LIMITS.IMG_QUALITY) : file;
   const safe = (file.name || "dosya").replace(/[^\w.\-]/g, "_").slice(-60);
   const path = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${safe}`;
   const { error } = await supa.storage.from(bucket).upload(path, body, {
@@ -114,6 +133,27 @@ export async function uploadFile(file, bucket = "gorev") {
   if (error) { console.error(error); alert("Dosya yüklenemedi: " + error.message); return null; }
   const { data } = supa.storage.from(bucket).getPublicUrl(path);
   return { url: data?.publicUrl || null, name: file.name || "dosya" };
+}
+
+/* Depo doluluk bilgisi (kanit + gorev bucket'larındaki toplam boyut).
+   Ücretsiz Supabase planı 1 GB dosya alanı verir. */
+export async function storageUsage() {
+  if (!supa) return null;
+  let total = 0, count = 0;
+  for (const bucket of ["gorev", "kanit"]) {
+    try {
+      let offset = 0;
+      while (true) {
+        const { data, error } = await supa.storage.from(bucket).list("", { limit: 100, offset });
+        if (error || !data || data.length === 0) break;
+        for (const f of data) { total += f.metadata?.size || 0; count++; }
+        if (data.length < 100) break;
+        offset += 100;
+      }
+    } catch { /* bucket yoksa atla */ }
+  }
+  const limitBytes = 1024 * 1024 * 1024; // 1 GB
+  return { bytes: total, count, limitBytes, percent: Math.min(100, (total / limitBytes) * 100) };
 }
 
 /* ── Karbon emisyon faktörleri (kg CO2e / kg atık) ──

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
-import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -292,7 +292,11 @@ function App({ user, logout }) {
 }
 
 /* ═══════════ GENEL DURUM ═══════════ */
-function Dashboard({ zones = [], cleanLogs, wasteLogs, incidents, targets, assignments }) {
+function Dashboard({ user, zones = [], cleanLogs, wasteLogs, incidents, targets, assignments }) {
+  const [usage, setUsage] = useState(null);
+  useEffect(() => {
+    if (user?.is_admin && isOnline) storageUsage().then(setUsage).catch(() => {});
+  }, [user]);
   const todayWaste = wasteLogs.filter(w => isToday(w.created_at));
   const totalWaste = wasteLogs.reduce((s, w) => s + Number(w.amount), 0);
   const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
@@ -353,6 +357,28 @@ function Dashboard({ zones = [], cleanLogs, wasteLogs, incidents, targets, assig
           </div>
         ))}
       </div>
+
+      {usage && (
+        <div style={{ ...S.card, borderTop: `3px solid ${usage.percent > 85 ? T.red : usage.percent > 60 ? T.amber : T.green}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={S.h2}>Dosya deposu</div>
+              <div style={{ fontSize: 12.5, color: T.sub }}>{usage.count} dosya · {(usage.bytes / (1024 * 1024)).toFixed(1)} MB / 1024 MB</div>
+            </div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 22, color: usage.percent > 85 ? T.red : usage.percent > 60 ? T.amber : T.green }}>
+              %{usage.percent.toFixed(0)}
+            </div>
+          </div>
+          <div style={{ height: 8, background: "#eef0ef", borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ width: `${usage.percent}%`, height: "100%", background: usage.percent > 85 ? T.red : usage.percent > 60 ? T.amber : T.green }} />
+          </div>
+          {usage.percent > 85 && (
+            <div style={{ fontSize: 12.5, color: T.red, marginTop: 8 }}>
+              Depo dolmak üzere. Eski/kapanan görevlerin dosyalarını temizleyin veya planı yükseltin.
+            </div>
+          )}
+        </div>
+      )}
 
       {byType.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16 }}>
@@ -1435,6 +1461,9 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
           <button onClick={addComment} disabled={(!body.trim() && !file) || busy} style={{ ...S.btn, ...S.btnGreen, opacity: ((!body.trim() && !file) || busy) ? 0.4 : 1 }}>
             {busy ? "Gönderiliyor…" : "Gönder"}
           </button>
+        </div>
+        <div style={{ fontSize: 11.5, color: T.faint, marginTop: 8 }}>
+          Fotoğraflar otomatik küçültülür. Belge (PDF/Word/Excel) en fazla {FILE_LIMITS.DOC_MAX_MB} MB.
         </div>
         {!isOnline && <div style={{ fontSize: 12, color: T.amber, marginTop: 8 }}>Yerel modda dosya yüklenmez (Supabase gerekli).</div>}
       </div>
