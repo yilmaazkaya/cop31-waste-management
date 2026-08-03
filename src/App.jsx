@@ -952,6 +952,8 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
 
   const [busyAdd, setBusyAdd] = useState(false);
   const [addHata, setAddHata] = useState("");
+  const [busyEdit, setBusyEdit] = useState(false);
+  const [editHata, setEditHata] = useState("");
 
   const add = async () => {
     if (!f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || busyAdd) return;
@@ -972,17 +974,39 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
     let perms = [];
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
-    setEditId(s.id); setExpandId(null);
-    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift, phone: s.phone || "", email: s.email || "", is_admin: !!s.is_admin, perms });
+    setEditId(s.id); setExpandId(null); setEditHata("");
+    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift,
+      phone: s.phone || "", email: s.email || "", sifre: "", is_admin: !!s.is_admin, perms,
+      _hesapVar: !!(s.email && s.auth_id) });
   };
-  const cancelEdit = () => { setEditId(null); setE_({}); };
+  const cancelEdit = () => { setEditId(null); setE_({}); setEditHata(""); };
+
   const saveEdit = async (s) => {
-    if (!e_.name?.trim()) return;
+    if (!e_.name?.trim() || busyEdit) return;
+    const hesapVar = !!(s.email && s.auth_id);
+    setBusyEdit(true); setEditHata("");
+
+    let auth_id = s.auth_id || null;
+    let email = s.email || null;
+
+    // Giriş hesabı yoksa ve e-posta+şifre girildiyse hesabı şimdi oluştur
+    if (!hesapVar && (e_.email || "").trim()) {
+      if ((e_.sifre || "").length < MIN_SIFRE) {
+        setEditHata(`Giriş hesabı için şifre en az ${MIN_SIFRE} karakter olmalı.`);
+        setBusyEdit(false); return;
+      }
+      const hesap = await hesapOlustur(e_.email, e_.sifre);
+      if (hesap.hata) { setEditHata(hesap.hata); setBusyEdit(false); return; }
+      auth_id = hesap.id;
+      email = e_.email.trim().toLowerCase();
+    }
+
     await updateRow("staff", s.id, {
       name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift,
-      phone: e_.phone || null, email: e_.email || null, is_admin: e_.is_admin,
+      phone: e_.phone || null, email, auth_id, is_admin: e_.is_admin,
       permissions: JSON.stringify(e_.perms || []),
     }, user.name);
+    setBusyEdit(false);
     cancelEdit(); reload();
   };
 
@@ -1070,13 +1094,18 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
           </select>
         </div>
         <div>
-          <label style={S.label}>E-posta {which === "new" && <span style={{ color: T.red }}>*</span>}</label>
+          <label style={S.label}>
+            E-posta {(which === "new" || !v._hesapVar) && <span style={{ color: T.red }}>*</span>}
+          </label>
           <input style={S.input} type="email" autoComplete="off" placeholder="ornek@sirket.com"
             value={v.email} onChange={e => onChange("email", e.target.value)}
-            disabled={which === "edit"} title={which === "edit" ? "Giriş e-postası değiştirilemez" : ""} />
-          {which === "edit" && <div style={{ fontSize: 11, color: T.faint, marginTop: -8, marginBottom: 10 }}>Giriş e-postası sonradan değiştirilemez.</div>}
+            disabled={which === "edit" && v._hesapVar}
+            title={which === "edit" && v._hesapVar ? "Giriş e-postası değiştirilemez" : ""} />
+          {which === "edit" && v._hesapVar && (
+            <div style={{ fontSize: 11, color: T.faint, marginTop: -8, marginBottom: 10 }}>Giriş e-postası değiştirilemez.</div>
+          )}
         </div>
-        {which === "new" && (
+        {(which === "new" || !v._hesapVar) && (
           <div>
             <label style={S.label}>Şifre <span style={{ color: T.red }}>*</span></label>
             <input style={S.input} type="password" autoComplete="new-password" placeholder={`En az ${MIN_SIFRE} karakter`}
@@ -1202,6 +1231,9 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
                                 <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 600, color: T.ink, whiteSpace: "nowrap" }}>{s.name}</div>
                                   {s.is_admin && <div style={{ fontSize: 11, color: T.blue, fontWeight: 600 }}>Yönetici</div>}
+                                  {!(s.email && s.auth_id) && (
+                                    <div style={{ fontSize: 10.5, color: T.amber, fontWeight: 600 }}>⚠ giriş hesabı yok</div>
+                                  )}
                                 </div>
                               </div>
                             </td>
@@ -1254,10 +1286,21 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
                             <tr key={s.id + "-e"} style={{ borderBottom: `2px solid ${T.green}`, background: "#fafbfa" }}>
                               <td colSpan={7} style={{ padding: 18 }}>
                                 <div style={{ maxWidth: 720 }}>
+                                  {!e_._hesapVar && (
+                                    <div style={{ background: T.amberSoft, color: "#7a5c17", borderRadius: 9, padding: 11, fontSize: 12.5, marginBottom: 14, lineHeight: 1.55 }}>
+                                      Bu personelin <b>giriş hesabı yok</b>. E-posta ve şifre girip kaydederseniz
+                                      giriş hesabı oluşturulur ve sisteme girebilir. Boş bırakırsanız yalnız bilgileri güncellenir.
+                                    </div>
+                                  )}
                                   {renderFormFields({ which: "edit", v: e_, onChange: setE, compact: true })}
+                                  {editHata && (
+                                    <div style={{ background: T.redSoft, color: T.red, borderRadius: 9, padding: 11, fontSize: 13, marginBottom: 12 }}>{editHata}</div>
+                                  )}
                                   <div style={{ display: "flex", gap: 8 }}>
-                                    <button onClick={() => saveEdit(s)} disabled={!e_.name?.trim()}
-                                      style={{ ...S.btn, ...S.btnGreen, opacity: !e_.name?.trim() ? 0.4 : 1 }}>Kaydet</button>
+                                    <button onClick={() => saveEdit(s)} disabled={busyEdit || !e_.name?.trim()}
+                                      style={{ ...S.btn, ...S.btnGreen, opacity: (busyEdit || !e_.name?.trim()) ? 0.4 : 1 }}>
+                                      {busyEdit ? "Kaydediliyor…" : "Kaydet"}
+                                    </button>
                                     <button onClick={cancelEdit} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
                                   </div>
                                 </div>
