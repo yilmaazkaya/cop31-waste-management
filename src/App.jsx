@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area, LineChart, Line } from "recharts";
 import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
@@ -48,6 +48,7 @@ const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
 const ALL_TABS = [
   { id: "dashboard", label: "Genel durum", desc: "Özet, grafikler, uyarılar" },
   { id: "istakip",   label: "İş Takibi",   desc: "Bana atanan görevler" },
+  { id: "isanaliz",  label: "İş Analizi",  desc: "Görev istatistikleri ve grafikler" },
   { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
   { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
   { id: "gorev",     label: "Görevler",    desc: "Bölge sorumlulukları, SLA" },
@@ -64,8 +65,8 @@ const ROLE_TABS = {
   "Temizlik":       ["saha", "istakip"],
   "Atık Toplama":   ["atik", "istakip"],
   "Araç Sürücü":    ["atik", "istakip"],
-  "Denetim":        ["dashboard", "istakip", "olay", "gorev", "rapor"],
-  "Saha Sorumlusu": ["dashboard", "istakip", "saha", "atik", "gorev", "olay", "rapor"],
+  "Denetim":        ["dashboard", "istakip", "isanaliz", "olay", "gorev", "rapor"],
+  "Saha Sorumlusu": ["dashboard", "istakip", "isanaliz", "saha", "atik", "gorev", "olay", "rapor"],
 };
 
 /* Bir kullanıcının görebileceği ekranları hesaplar. */
@@ -282,6 +283,7 @@ function App({ user, logout }) {
         {allowed.includes(tab) && (<>
           {tab === "dashboard" && <Dashboard {...ctx} />}
           {tab === "istakip" && <TaskManager {...ctx} />}
+          {tab === "isanaliz" && <TaskAnalytics {...ctx} />}
           {tab === "saha" && <FieldEntry {...ctx} />}
           {tab === "atik" && <WasteEntry {...ctx} />}
           {tab === "gorev" && <Assignments {...ctx} />}
@@ -1573,6 +1575,348 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
   );
 }
 
+
+/* ═══════════ İŞ ANALİZİ (GÖREV DASHBOARD) ═══════════ */
+function TaskAnalytics({ user, staff, tasks = [] }) {
+  const isAdmin = user.is_admin;
+  const [range, setRange] = useState(30); // gün
+
+  // Yönetici hepsini, personel kendi görevlerini analiz eder
+  const scope = isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id);
+
+  const cutoff = useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - range); d.setHours(0, 0, 0, 0); return d;
+  }, [range]);
+  const inRange = scope.filter(t => new Date(t.created_at) >= cutoff);
+
+  const today0 = new Date(new Date().toDateString());
+
+  /* ── Temel sayımlar ── */
+  const total = scope.length;
+  const byStatus = STATUSES.map(s => ({
+    id: s.id, name: s.label, value: scope.filter(t => t.status === s.id).length, color: s.color,
+  }));
+  const done = byStatus.find(s => s.id === "tamamlandi")?.value || 0;
+  const waiting = byStatus.find(s => s.id === "onay_bekliyor")?.value || 0;
+  const revize = byStatus.find(s => s.id === "revize")?.value || 0;
+  const open = total - done;
+  const completionRate = total ? Math.round((done / total) * 100) : 0;
+  const overdue = scope.filter(t => t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0).length;
+
+  /* ── Ortalama tamamlanma süresi (gün) ── */
+  const finished = scope.filter(t => t.status === "tamamlandi" && t.approved_at);
+  const avgDays = finished.length
+    ? (finished.reduce((s, t) => s + (new Date(t.approved_at) - new Date(t.created_at)) / 86400000, 0) / finished.length)
+    : null;
+
+  /* ── Zaman serisi: günlük açılan vs tamamlanan ── */
+  const series = useMemo(() => {
+    const days = [];
+    for (let i = range - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
+      const key = d.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" });
+      const acilan = scope.filter(t => new Date(t.created_at).toDateString() === d.toDateString()).length;
+      const kapanan = scope.filter(t => t.approved_at && new Date(t.approved_at).toDateString() === d.toDateString()).length;
+      days.push({ gun: key, acilan, kapanan });
+    }
+    return range > 31 ? days.filter((_, i) => i % 2 === 0) : days;
+  }, [scope, range]);
+
+  /* ── Kümülatif birikim (açık iş yükü trendi) ── */
+  const cumulative = useMemo(() => {
+    let openCount = 0;
+    return series.map(d => { openCount += d.acilan - d.kapanan; return { gun: d.gun, birikim: Math.max(0, openCount) }; });
+  }, [series]);
+
+  /* ── Öncelik dağılımı ── */
+  const byPriority = PRIORITIES.map(p => ({
+    name: p.label, color: p.color,
+    toplam: scope.filter(t => t.priority === p.id).length,
+    acik: scope.filter(t => t.priority === p.id && t.status !== "tamamlandi").length,
+  })).filter(p => p.toplam > 0);
+
+  /* ── Kişi bazlı performans ── */
+  const byPerson = staff.map(s => {
+    const mine = scope.filter(t => t.assignee_id === s.id);
+    const md = mine.filter(t => t.status === "tamamlandi").length;
+    const mo = mine.filter(t => t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0).length;
+    return {
+      name: s.name.split(" ")[0], full: s.name, toplam: mine.length, tamamlanan: md,
+      acik: mine.length - md, geciken: mo,
+      oran: mine.length ? Math.round((md / mine.length) * 100) : 0,
+    };
+  }).filter(p => p.toplam > 0).sort((a, b) => b.toplam - a.toplam);
+
+  /* ── Yaklaşan terminler (7 gün) ── */
+  const upcoming = scope.filter(t => {
+    if (!t.due_date || t.status === "tamamlandi") return false;
+    const d = new Date(t.due_date); const diff = (d - today0) / 86400000;
+    return diff >= 0 && diff <= 7;
+  }).sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
+
+  /* ── Kontrol listesi ilerlemesi ── */
+  const withCl = scope.filter(t => parseCl(t.checklist).length > 0);
+  const clProgress = withCl.length ? Math.round(
+    withCl.reduce((s, t) => { const c = parseCl(t.checklist); return s + (c.filter(i => i.done).length / c.length); }, 0) / withCl.length * 100
+  ) : null;
+
+  /* ── Revize oranı (ilk seferde onaylanma kalitesi) ── */
+  const everRevised = scope.filter(t => t.reject_note).length;
+  const revizeOrani = total ? Math.round((everRevised / total) * 100) : 0;
+
+  const KPI = ({ label, value, unit, accent, hint }) => (
+    <div style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${accent}` }}>
+      <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 26, fontWeight: 800, color: T.ink, lineHeight: 1 }}>
+        {value}<span style={{ fontSize: 12, fontWeight: 500, color: T.faint, marginLeft: 4 }}>{unit}</span>
+      </div>
+      {hint && <div style={{ fontSize: 11, color: T.faint, marginTop: 4 }}>{hint}</div>}
+    </div>
+  );
+
+  if (total === 0) {
+    return (
+      <div style={{ ...S.card, textAlign: "center", padding: 50 }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 8 }}>Henüz analiz edilecek görev yok</div>
+        <div style={{ fontSize: 13.5, color: T.sub }}>İş Takibi sekmesinden görev atandıkça buradaki grafikler dolacak.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Zaman aralığı */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 12.5, color: T.sub, fontWeight: 600, marginRight: 4 }}>Dönem:</span>
+        {[7, 14, 30, 90].map(d => (
+          <button key={d} onClick={() => setRange(d)} style={{
+            ...S.btn, padding: "7px 14px", fontSize: 12.5,
+            background: range === d ? T.green : "#fbfcfb",
+            color: range === d ? "#fff" : T.sub,
+            border: `1.5px solid ${range === d ? T.green : T.line}`,
+          }}>{d} gün</button>
+        ))}
+        <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>
+          {isAdmin ? "Tüm ekip" : "Kendi görevleriniz"} · {inRange.length} görev bu dönemde açıldı
+        </span>
+      </div>
+
+      {/* KPI'lar */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <KPI label="Toplam görev" value={total} unit="" accent={T.blue} />
+        <KPI label="Tamamlanan" value={done} unit="" accent={T.green} hint={`%${completionRate} tamamlanma`} />
+        <KPI label="Açık görev" value={open} unit="" accent={T.amber} />
+        <KPI label="Onay bekleyen" value={waiting} unit="" accent={waiting > 0 ? T.blue : T.faint} />
+        <KPI label="Geciken" value={overdue} unit="" accent={overdue > 0 ? T.red : T.faint} />
+        <KPI label="Ort. tamamlanma" value={avgDays !== null ? avgDays.toFixed(1) : "—"} unit={avgDays !== null ? "gün" : ""} accent={T.green} />
+      </div>
+
+      {/* Tamamlanma çubuğu */}
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1 }}>
+            <div style={S.h2}>Genel ilerleme</div>
+            <div style={{ fontSize: 12.5, color: T.sub }}>{done} / {total} görev tamamlandı</div>
+          </div>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 24, color: completionRate >= 70 ? T.green : completionRate >= 40 ? T.amber : T.red }}>%{completionRate}</div>
+        </div>
+        <div style={{ display: "flex", height: 14, borderRadius: 7, overflow: "hidden", background: "#eef0ef" }}>
+          {byStatus.filter(s => s.value > 0).map(s => (
+            <div key={s.id} title={`${s.name}: ${s.value}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
+          {byStatus.filter(s => s.value > 0).map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.sub }}>
+              <span style={{ width: 10, height: 10, borderRadius: 2, background: s.color }} />
+              {s.name}: <b style={{ color: T.ink }}>{s.value}</b>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Trend: açılan vs kapanan */}
+      <div style={S.card}>
+        <div style={S.h2}>Açılan / tamamlanan görev trendi</div>
+        <div style={S.sub}>Son {range} gün</div>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={series}>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+            <XAxis dataKey="gun" tick={{ fontSize: 10.5, fill: T.sub }} interval="preserveStartEnd" />
+            <YAxis tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+            <Tooltip contentStyle={S.tooltip} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey="acilan" fill={T.blue} name="Açılan" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="kapanan" fill={T.green} name="Tamamlanan" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(330px, 1fr))", gap: 16 }}>
+        {/* Durum dağılımı */}
+        <div style={S.card}>
+          <div style={S.h2}>Durum dağılımı</div>
+          <ResponsiveContainer width="100%" height={230}>
+            <PieChart>
+              <Pie data={byStatus.filter(s => s.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={78} innerRadius={46} paddingAngle={2}>
+                {byStatus.filter(s => s.value > 0).map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Pie>
+              <Tooltip contentStyle={S.tooltip} />
+              <Legend wrapperStyle={{ fontSize: 11.5 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Açık iş yükü birikimi */}
+        <div style={S.card}>
+          <div style={S.h2}>Açık iş yükü birikimi</div>
+          <div style={S.sub}>Yükselen çizgi = işler birikiyor</div>
+          <ResponsiveContainer width="100%" height={230}>
+            <AreaChart data={cumulative}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+              <XAxis dataKey="gun" tick={{ fontSize: 10.5, fill: T.sub }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+              <Tooltip contentStyle={S.tooltip} />
+              <Area type="monotone" dataKey="birikim" stroke={T.amber} fill={T.amber} fillOpacity={0.18} strokeWidth={2} name="Açık görev" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Öncelik */}
+        {byPriority.length > 0 && (
+          <div style={S.card}>
+            <div style={S.h2}>Öncelik dağılımı</div>
+            <div style={S.sub}>Toplam ve hâlâ açık olanlar</div>
+            <ResponsiveContainer width="100%" height={210}>
+              <BarChart data={byPriority}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                <XAxis dataKey="name" tick={{ fontSize: 11.5, fill: T.sub }} />
+                <YAxis tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+                <Tooltip contentStyle={S.tooltip} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="toplam" fill={T.blue} name="Toplam" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="acik" fill={T.red} name="Açık" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* Kalite göstergeleri */}
+        <div style={S.card}>
+          <div style={S.h2}>Kalite göstergeleri</div>
+          <div style={{ marginTop: 12 }}>
+            {[
+              { l: "İlk seferde onaylanma", v: `%${100 - revizeOrani}`, hint: `${everRevised} görev revize istendi`, c: revizeOrani < 20 ? T.green : revizeOrani < 40 ? T.amber : T.red },
+              { l: "Kontrol listesi ilerlemesi", v: clProgress !== null ? `%${clProgress}` : "—", hint: `${withCl.length} görevde alt adım var`, c: T.blue },
+              { l: "Onay bekleyen", v: waiting, hint: waiting > 0 ? "Yönetici incelemesi gerekiyor" : "Bekleyen yok", c: waiting > 0 ? T.blue : T.faint },
+              { l: "Revize aşamasında", v: revize, hint: revize > 0 ? "Personelde düzeltme bekliyor" : "Yok", c: revize > 0 ? T.red : T.faint },
+              { l: "Geciken görev", v: overdue, hint: overdue > 0 ? "Termin aşıldı" : "Gecikme yok", c: overdue > 0 ? T.red : T.green },
+            ].map((r, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13.5, color: T.ink, fontWeight: 600 }}>{r.l}</div>
+                  <div style={{ fontSize: 11.5, color: T.faint }}>{r.hint}</div>
+                </div>
+                <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 18, color: r.c }}>{r.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Kişi bazlı performans */}
+      {isAdmin && byPerson.length > 0 && (
+        <div style={S.card}>
+          <div style={S.h2}>Kişi bazlı iş yükü ve performans</div>
+          <div style={S.sub}>Kime kaç görev atandı, ne kadarı tamamlandı</div>
+          <ResponsiveContainer width="100%" height={Math.max(180, byPerson.length * 42)}>
+            <BarChart data={byPerson} layout="vertical" margin={{ left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+              <XAxis type="number" tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: T.ink }} width={90} />
+              <Tooltip contentStyle={S.tooltip} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="tamamlanan" stackId="a" fill={T.green} name="Tamamlanan" radius={[0, 0, 0, 0]} />
+              <Bar dataKey="acik" stackId="a" fill={T.amber} name="Açık" radius={[0, 5, 5, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+
+          <div style={{ marginTop: 14, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${T.line}` }}>
+                  {["Personel", "Toplam", "Tamamlanan", "Açık", "Geciken", "Başarı"].map(h => (
+                    <th key={h} style={{ padding: "8px 6px", textAlign: h === "Personel" ? "left" : "center", color: T.sub, fontWeight: 600, fontSize: 12 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {byPerson.map(p => (
+                  <tr key={p.full} style={{ borderBottom: `1px solid ${T.line}` }}>
+                    <td style={{ padding: "9px 6px", fontWeight: 600, color: T.ink }}>{p.full}</td>
+                    <td style={{ padding: "9px 6px", textAlign: "center" }}>{p.toplam}</td>
+                    <td style={{ padding: "9px 6px", textAlign: "center", color: T.green, fontWeight: 600 }}>{p.tamamlanan}</td>
+                    <td style={{ padding: "9px 6px", textAlign: "center", color: T.amber }}>{p.acik}</td>
+                    <td style={{ padding: "9px 6px", textAlign: "center", color: p.geciken > 0 ? T.red : T.faint, fontWeight: p.geciken > 0 ? 700 : 400 }}>{p.geciken}</td>
+                    <td style={{ padding: "9px 6px", textAlign: "center" }}>
+                      <span style={S.tag(p.oran >= 70 ? T.greenSoft : p.oran >= 40 ? T.amberSoft : T.redSoft, p.oran >= 70 ? T.green : p.oran >= 40 ? T.amber : T.red)}>%{p.oran}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Yaklaşan terminler */}
+      <div style={S.card}>
+        <div style={S.h2}>Yaklaşan terminler (7 gün)</div>
+        {upcoming.length === 0 ? (
+          <div style={{ padding: "20px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Önümüzdeki 7 günde termini dolan görev yok.</div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            {upcoming.map(t => {
+              const days = Math.ceil((new Date(t.due_date) - today0) / 86400000);
+              const pr = priOf(t.priority), st = statOf(t.status);
+              return (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.line}`, flexWrap: "wrap" }}>
+                  <span style={S.tag(days === 0 ? T.redSoft : days <= 2 ? T.amberSoft : T.blueSoft, days === 0 ? T.red : days <= 2 ? T.amber : T.blue)}>
+                    {days === 0 ? "Bugün" : `${days} gün`}
+                  </span>
+                  <span style={{ fontWeight: 600, fontSize: 13.5, color: T.ink, flex: 1, minWidth: 130 }}>{t.title}</span>
+                  {isAdmin && <span style={{ fontSize: 12.5, color: T.sub }}>{t.assignee_name}</span>}
+                  <span style={S.tag(st.soft, st.color)}>{st.label}</span>
+                  <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Geciken görevler */}
+      {overdue > 0 && (
+        <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8" }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 8 }}>Geciken görevler ({overdue})</div>
+          {scope.filter(t => t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0)
+            .sort((a, b) => new Date(a.due_date) - new Date(b.due_date))
+            .map(t => {
+              const late = Math.ceil((today0 - new Date(t.due_date)) / 86400000);
+              return (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #eccfcf", flexWrap: "wrap", fontSize: 13.5 }}>
+                  <span style={{ fontWeight: 700, color: T.red, minWidth: 70 }}>{late} gün geç</span>
+                  <span style={{ flex: 1, minWidth: 130, color: T.ink }}>{t.title}</span>
+                  {isAdmin && <span style={{ color: T.sub, fontSize: 12.5 }}>{t.assignee_name}</span>}
+                  <span style={S.tag(statOf(t.status).soft, statOf(t.status).color)}>{statOf(t.status).label}</span>
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ═══════════ RAPOR ═══════════ */
 function Report({ staff, cleanLogs, wasteLogs, incidents, targets }) {
