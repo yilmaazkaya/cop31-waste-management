@@ -884,7 +884,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
     if (which === "new") setF(p => ({ ...p, perms: next })); else setE_(p => ({ ...p, perms: next }));
   };
 
-  const PermPicker = ({ which, isAdmin, perms }) => isAdmin ? (
+  const renderPermPicker = ({ which, isAdmin, perms }) => isAdmin ? (
     <div style={{ fontSize: 12.5, color: T.blue, background: T.blueSoft, borderRadius: 9, padding: 10, marginBottom: 12 }}>
       Yönetici tüm ekranları görür — ayrı seçim gerekmez.
     </div>
@@ -908,7 +908,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
   );
 
   /* Ortak form alanları (yeni + düzenle) */
-  const FormFields = ({ which, v, onChange, compact }) => (
+  const renderFormFields = ({ which, v, onChange, compact }) => (
     <>
       <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr 1fr" : "1fr", gap: 10 }}>
         <div style={{ gridColumn: compact ? "1 / -1" : "auto" }}>
@@ -952,7 +952,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
         <input type="checkbox" checked={v.is_admin} onChange={e => onChange("is_admin", e.target.checked)} />
         Yönetici yetkisi (tüm ekranları görür)
       </label>
-      <PermPicker which={which} isAdmin={v.is_admin} perms={v.perms} />
+      {renderPermPicker({ which, isAdmin: v.is_admin, perms: v.perms })}
     </>
   );
 
@@ -992,7 +992,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
             <div style={{ ...S.card, borderColor: T.green }}>
               <div style={S.h2}>Yeni personel</div>
               <div style={S.sub}>PIN 4 haneli olmalı — personel bu kodla giriş yapar.</div>
-              <FormFields which="new" v={f} onChange={set} compact />
+              {renderFormFields({ which: "new", v: f, onChange: set, compact: true })}
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)}
                   style={{ ...S.btn, ...S.btnGreen, opacity: (!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
@@ -1105,7 +1105,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
                             <tr key={s.id + "-e"} style={{ borderBottom: `2px solid ${T.green}`, background: "#fafbfa" }}>
                               <td colSpan={7} style={{ padding: 18 }}>
                                 <div style={{ maxWidth: 720 }}>
-                                  <FormFields which="edit" v={e_} onChange={setE} compact />
+                                  {renderFormFields({ which: "edit", v: e_, onChange: setE, compact: true })}
                                   <div style={{ display: "flex", gap: 8 }}>
                                     <button onClick={() => saveEdit(s)} disabled={!e_.name?.trim() || (e_.pin || "").length !== 4}
                                       style={{ ...S.btn, ...S.btnGreen, opacity: (!e_.name?.trim() || (e_.pin || "").length !== 4) ? 0.4 : 1 }}>Kaydet</button>
@@ -1847,7 +1847,7 @@ function TaskAnalytics({ user, staff, tasks = [], depts = [], roles = [] }) {
   const everRevised = scope.filter(t => t.reject_note).length;
   const revizeOrani = total ? Math.round((everRevised / total) * 100) : 0;
 
-  const KPI = ({ label, value, unit, accent, hint }) => (
+  const renderKPI = ({ label, value, unit, accent, hint }) => (
     <div style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${accent}` }}>
       <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{label}</div>
       <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 26, fontWeight: 800, color: T.ink, lineHeight: 1 }}>
@@ -1898,12 +1898,12 @@ function TaskAnalytics({ user, staff, tasks = [], depts = [], roles = [] }) {
 
       {/* KPI'lar */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
-        <KPI label="Toplam görev" value={total} unit="" accent={T.blue} />
-        <KPI label="Tamamlanan" value={done} unit="" accent={T.green} hint={`%${completionRate} tamamlanma`} />
-        <KPI label="Açık görev" value={open} unit="" accent={T.amber} />
-        <KPI label="Onay bekleyen" value={waiting} unit="" accent={waiting > 0 ? T.blue : T.faint} />
-        <KPI label="Geciken" value={overdue} unit="" accent={overdue > 0 ? T.red : T.faint} />
-        <KPI label="Ort. tamamlanma" value={avgDays !== null ? avgDays.toFixed(1) : "—"} unit={avgDays !== null ? "gün" : ""} accent={T.green} />
+        {renderKPI({ label: "Toplam görev", value: total, unit: "", accent: T.blue })}
+        {renderKPI({ label: "Tamamlanan", value: done, unit: "", accent: T.green, hint: `%${completionRate} tamamlanma` })}
+        {renderKPI({ label: "Açık görev", value: open, unit: "", accent: T.amber })}
+        {renderKPI({ label: "Onay bekleyen", value: waiting, unit: "", accent: waiting > 0 ? T.blue : T.faint })}
+        {renderKPI({ label: "Geciken", value: overdue, unit: "", accent: overdue > 0 ? T.red : T.faint })}
+        {renderKPI({ label: "Ort. tamamlanma", value: avgDays !== null ? avgDays.toFixed(1) : "—", unit: avgDays !== null ? "gün" : "", accent: T.green })}
       </div>
 
       {/* Tamamlanma çubuğu */}
