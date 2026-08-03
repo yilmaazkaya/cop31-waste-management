@@ -40,7 +40,8 @@ const DESTINATIONS = ["Geri Dönüşüm Tesisi", "Kompost Alanı", "Düzenli Dep
 /* Görevler artık veritabanından gelir (job_roles). Aşağıdaki liste
    yalnızca tablo henüz kurulmadıysa (yerel mod) yedektir. */
 const FALLBACK_ROLES = ["Temizlik", "Atık Toplama", "Denetim", "Araç Sürücü", "Saha Sorumlusu"];
-const SHIFTS = ["Sabah (06-14)", "Öğle (14-22)", "Gece (22-06)", "Tam gün"];
+/* Vardiyalar veritabanından gelir; bu liste yalnızca yedektir. */
+const FALLBACK_SHIFTS = ["Tam gün", "Sabah (08-17)", "Akşam (17-01)", "Gece (01-08)"];
 
 /* ── EKRANLAR ve YETKİ ──
    ALL_TABS: sistemdeki tüm ekranlar.
@@ -248,6 +249,7 @@ function App({ user, logout }) {
   const [tasks, setTasks] = useState([]);
   const [roles, setRoles] = useState([]);
   const [depts, setDepts] = useState([]);
+  const [shifts, setShifts] = useState([]);
   const [qrZone, setQrZone] = useState(null);
   const [sifreModal, setSifreModal] = useState(false);
   const [yeniSifre, setYeniSifre] = useState("");
@@ -255,10 +257,11 @@ function App({ user, logout }) {
   const [sifreMsg, setSifreMsg] = useState("");
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z, tk, jr, dp] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk, jr, dp, sh] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
       fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
       fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"), fetchAll("departments"),
+      fetchAll("shifts"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -270,6 +273,7 @@ function App({ user, logout }) {
     const jrActive = jr.filter(x => x.active !== false);
     setRoles(jrActive.length > 0 ? jrActive : FALLBACK_ROLES.map(n => ({ name: n })));
     setDepts(dp.filter(x => x.active !== false));
+    setShifts(sh.filter(x => x.active !== false));
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -292,7 +296,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, tasks, roles, depts, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, roles, depts, shifts, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -927,7 +931,9 @@ function Incidents({ user, zones = [], incidents, reload }) {
 }
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
-function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
+function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs, reload }) {
+  const shiftNames = shifts.length > 0 ? shifts.map(x => x.name) : FALLBACK_SHIFTS;
+  const firstShift = shiftNames[0] || "Tam gün";
   const roleNames = roles.length > 0 ? roles.map(r => r.name) : FALLBACK_ROLES;
   const deptNames = depts.map(d => d.name);
   const firstRole = roleNames[0] || "Temizlik";
@@ -940,7 +946,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
   const [editId, setEditId] = useState(null);
   const [expandId, setExpandId] = useState(null);  // ekran listesini açan satır
 
-  const blank = { name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
+  const blank = { name: "", role: firstRole, department: "", shift: firstShift, phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
   const [f, setF] = useState(blank);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [e_, setE_] = useState({});
@@ -1090,7 +1096,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
         <div>
           <label style={S.label}>Vardiya</label>
           <select style={S.input} value={v.shift} onChange={e => onChange("shift", e.target.value)}>
-            {SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
+            {shiftNames.map(x => <option key={x} value={x}>{x}</option>)}
           </select>
         </div>
         <div>
@@ -1149,16 +1155,20 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
       </div>
 
       {view === "tanimlar" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, alignItems: "start" }}>
           <LookupManager user={user} reload={reload} staff={staff} table="departments" items={depts}
-            title="1. Departman" hint="Önce ekip birimlerini tanımlayın (örn: Lojistik, Operasyon)."
+            title="1. Departman" hint="Ekip birimleri (örn: Lojistik, Operasyon)."
             placeholder="Örn: Lojistik" usedBy={(s, n) => s.department === n}
             usedMsg="departmanı bazı personelde kullanılıyor. Önce o kişilerin departmanını değiştirin." />
           <LookupManager user={user} reload={reload} staff={staff} table="job_roles" items={roles.filter(r => r.id)}
-            title="2. Görev / Unvan" hint="Her unvanı bir departmana bağlayın. Departman seçilmezse tüm departmanlarda görünür."
+            title="2. Görev / Unvan" hint="Unvanları departmana bağlayın. Yukarıdan departman seçerek listeyi daraltabilirsiniz."
             placeholder="Örn: Vinç Operatörü" usedBy={(s, n) => s.role === n}
             usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin."
             depts={depts} withDept />
+          <LookupManager user={user} reload={reload} staff={staff} table="shifts" items={shifts}
+            title="3. Vardiya" hint="Çalışma saatleri (örn: Sabah 08-17)."
+            placeholder="Örn: Sabah (08-17)" usedBy={(s, n) => s.shift === n}
+            usedMsg="vardiyası bazı personelde kullanılıyor. Önce o kişilerin vardiyasını değiştirin." />
         </div>
       ) : (
         <>
@@ -1547,7 +1557,7 @@ function Targets({ user, targets, reload }) {
 /* Görev ve departman için ortak ekle/düzenle/sil bileşeni */
 function LookupManager({ user, reload, staff, table, items, title, hint, placeholder, usedBy, usedMsg, depts = [], withDept }) {
   const [name, setName] = useState("");
-  const [dept, setDept] = useState("");
+  const [dept, setDept] = useState("__hepsi");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editName, setEditName] = useState("");
@@ -1557,6 +1567,7 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
   const add = async () => {
     if (!name.trim() || busy) return;
     if (items.some(r => r.name.toLowerCase() === name.trim().toLowerCase())) { alert("Bu kayıt zaten var."); return; }
+    if (withDept && dept === "__hepsi") { alert("Önce yukarıdan bir departman seçin (veya 'Genel')."); return; }
     setBusy(true);
     await insertRow(table, withDept ? { name: name.trim(), department: dept || null } : { name: name.trim() }, user.name);
     setName(""); setBusy(false); reload();
@@ -1616,12 +1627,22 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
   /* Unvanları departmana göre grupla (okunaklı olsun) */
   const groups = withDept ? (() => {
     const g = [];
-    depts.forEach(d => {
-      const list = items.filter(r => r.department === d.name);
-      if (list.length) g.push({ key: d.name, label: d.name, list });
-    });
-    const genel = items.filter(r => !r.department);
-    if (genel.length) g.push({ key: "__genel", label: "Genel (tüm departmanlar)", list: genel });
+    if (dept === "__hepsi") {
+      depts.forEach(d => {
+        const list = items.filter(r => r.department === d.name);
+        if (list.length) g.push({ key: d.name, label: d.name, list });
+      });
+      const genel = items.filter(r => !r.department);
+      if (genel.length) g.push({ key: "__genel", label: "Genel (tüm departmanlar)", list: genel });
+    } else if (dept === "") {
+      const genel = items.filter(r => !r.department);
+      g.push({ key: "__genel", label: "Genel (tüm departmanlar)", list: genel });
+    } else {
+      const list = items.filter(r => r.department === dept);
+      g.push({ key: dept, label: dept, list });
+      const genel = items.filter(r => !r.department);
+      if (genel.length) g.push({ key: "__genel", label: "Genel (her departmanda görünür)", list: genel });
+    }
     return g;
   })() : null;
 
@@ -1631,10 +1652,21 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
       <div style={S.sub}>{hint}</div>
 
       {withDept && (
-        <select style={{ ...S.input, fontSize: 13 }} value={dept} onChange={e => setDept(e.target.value)}>
-          <option value="">— Tüm departmanlar (genel) —</option>
-          {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-        </select>
+        <>
+          <label style={S.label}>Departman</label>
+          <select style={{ ...S.input, fontSize: 13, marginBottom: 8 }} value={dept} onChange={e => setDept(e.target.value)}>
+            <option value="__hepsi">Tümünü göster</option>
+            {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+            <option value="">Genel (tüm departmanlarda görünür)</option>
+          </select>
+          <div style={{ fontSize: 11.5, color: T.faint, marginBottom: 10, marginTop: -4 }}>
+            {dept === "__hepsi"
+              ? "Tüm unvanlar listeleniyor. Eklemek için önce departman seçin."
+              : dept === ""
+                ? "Eklenecek unvan tüm departmanlarda görünecek."
+                : `Eklenecek unvan "${dept}" departmanına bağlanacak.`}
+          </div>
+        </>
       )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <input style={{ ...S.input, marginBottom: 0 }} placeholder={placeholder} value={name}
@@ -1647,7 +1679,11 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
       {items.length === 0 ? (
         <div style={{ padding: "20px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz kayıt yok.</div>
       ) : withDept ? (
-        groups.map(g => (
+        groups.every(g => g.list.length === 0) ? (
+          <div style={{ padding: "18px 0", textAlign: "center", color: T.faint, fontSize: 13 }}>
+            Bu departmanda tanımlı unvan yok. Yukarıdan ekleyebilirsiniz.
+          </div>
+        ) : groups.filter(g => g.list.length > 0).map(g => (
           <div key={g.key} style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: g.key === "__genel" ? T.amber : T.green, textTransform: "uppercase", letterSpacing: 0.4, padding: "8px 0 2px", borderTop: `1px solid ${T.line}` }}>
               {g.label} ({g.list.length})
