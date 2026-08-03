@@ -255,11 +255,10 @@ function App({ user, logout }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <div style={{ width: 34, height: 34, borderRadius: 9, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 13, flexShrink: 0 }}>31</div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13.5, color: T.ink, lineHeight: 1.15 }}>Atık Yönetimi</div>
-            <div style={{ fontSize: 10.5, color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isOnline ? "● Merkezi" : "○ Yerel"} · {user.name}</div>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 14, color: T.ink, lineHeight: 1.2 }}>Atık Yönetimi</div>
+          <div style={{ fontSize: 11, color: T.faint, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {user.name} · <span style={{ color: isOnline ? T.green : T.amber }}>{isOnline ? "çevrimiçi" : "yerel mod"}</span>
           </div>
         </div>
 
