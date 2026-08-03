@@ -632,11 +632,11 @@ function FieldEntry({ user, zones = [], cleanLogs, reload, qrZone }) {
                 <span style={{ fontWeight: 600, color: T.ink }}>{l.staff_name}</span>
                 <span style={{ color: T.sub }}>{l.zone}</span>
                 <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
-                {(user.is_admin || l.staff_name === user.name) && (
+                {user.is_admin && (
                   <button onClick={async () => {
-                    if (!window.confirm(`${l.zone} — ${l.action} kaydı silinsin mi?`)) return;
+                    if (!window.confirm(`"${l.staff_name}" adına ${l.zone} bölgesindeki "${l.action}" kaydı KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
                     await hardDeleteRow("clean_logs", l.id, user.name); reload();
-                  }} title="Kaydı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
+                  }} title="Kaydı sil (yalnız yönetici)" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
                 )}
               </div>
             ))}
@@ -762,11 +762,11 @@ function WasteEntry({ user, zones = [], wasteLogs, reload }) {
                     <span style={{ color: T.sub }}>{l.zone} → {l.destination}</span>
                     {l.photo_url && <a href={l.photo_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: T.blue }}>📷 kanıt</a>}
                     <span style={{ marginLeft: "auto", color: T.faint, fontSize: 12.5 }}>{trDate(l.created_at)} {trTime(l.created_at)}</span>
-                    {(user.is_admin || l.staff_name === user.name) && (
+                    {user.is_admin && (
                       <button onClick={async () => {
-                        if (!window.confirm(`${l.amount} kg ${wt.name} kaydı silinsin mi?`)) return;
+                        if (!window.confirm(`${l.amount} kg ${wt.name} atık kaydı (${l.zone} → ${l.destination}) KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
                         await hardDeleteRow("waste_logs", l.id, user.name); reload();
-                      }} title="Kaydı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
+                      }} title="Kaydı sil (yalnız yönetici)" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
                     )}
                   </div>
                   {(l.uatf_no || l.facility_license) && (
@@ -911,11 +911,11 @@ function Incidents({ user, zones = [], incidents, reload }) {
                       <button onClick={async () => { await updateRow("incidents", i.id, { status: "Kapatıldı" }, user.name); reload(); }}
                         style={{ ...S.btn, padding: "5px 12px", fontSize: 12, background: T.greenSoft, color: T.green }}>Kapat</button>
                     ) : <span style={S.tag("#eef0ef", T.faint)}>Kapatıldı</span>}
-                    {(user.is_admin || i.staff_name === user.name) && (
+                    {user.is_admin && (
                       <button onClick={async () => {
-                        if (!window.confirm("Bu olay kaydı silinsin mi?")) return;
+                        if (!window.confirm(`Olay kaydı KALICI silinecek:\n"${i.description}"\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
                         await hardDeleteRow("incidents", i.id, user.name); reload();
-                      }} title="Kaydı sil" style={{ ...S.btn, padding: "5px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+                      }} title="Kaydı sil (yalnız yönetici)" style={{ ...S.btn, padding: "5px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
                     )}
                   </span>
                 </div>
@@ -1269,7 +1269,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                                   <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
                                     style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: "#eef0ef", color: T.sub, marginRight: 5 }}>Pasif</button>
                                   {DENEME_MODU && (
-                                    <button onClick={async () => { if (window.confirm(`"${s.name}" KALICI silinsin mi?`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
+                                    <button onClick={async () => { if (window.confirm(`"${s.name}" personel kaydı ve tüm bilgileri KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
                                       style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
                                   )}
                                 </>
@@ -1467,7 +1467,7 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
                     <button onClick={() => startEdit(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
                     <button onClick={() => remove(z)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.redSoft, color: T.red }}>Kaldır</button>
                     {DENEME_MODU && (
-                      <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${z.name}" bölgesi KALICI silinsin mi? Geri alınamaz.`)) { await hardDeleteRow("zones", z.dbId || z.id, user.name); reload(); } }}
+                      <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${z.name}" bölgesi ve QR kodu KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) { await hardDeleteRow("zones", z.dbId || z.id, user.name); reload(); } }}
                         style={{ ...S.btn, padding: "7px 12px", fontSize: 12, background: T.red, color: "#fff" }}>Sil</button>
                     )}
                   </div>
@@ -1791,9 +1791,13 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
                 <span style={S.tag(st.soft, st.color)}>{st.label}</span>
                 <span style={{ fontWeight: 700, fontSize: 14.5, color: T.ink, flex: 1, minWidth: 140 }}>{t.title}</span>
                 <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
-                {DENEME_MODU && isAdmin && (
-                  <button onClick={async (e) => { e.stopPropagation(); if (window.confirm(`"${t.title}" KALICI silinsin mi?`)) { await hardDeleteRow("tasks", t.id, user.name); reload(); } }}
-                    title="Kalıcı sil" style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.red, color: "#fff" }}>Sil</button>
+                {t.assigned_by === user.name && (
+                  <button onClick={async (e) => {
+                    e.stopPropagation();
+                    if (!window.confirm(`"${t.title}" görevi, yorumları ve ekleriyle birlikte KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
+                    await hardDeleteRow("tasks", t.id, user.name); reload();
+                  }} title="Bu görevi siz atadınız — silebilirsiniz"
+                    style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
                 )}
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
@@ -1940,13 +1944,22 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
     <div style={{ maxWidth: 720, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Görev listesi</button>
-        {isAdmin && (
-          <button onClick={async () => { if (window.confirm(`"${task.title}" görevi kaldırılsın mı? (listeden kalkar, kayıt korunur)`)) { await deactivateRow("tasks", task.id, user.name); reload(); onBack(); } }}
-            style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.redSoft, color: T.red, marginLeft: "auto" }}>Kaldır</button>
+        {task.assigned_by === user.name && (
+          <>
+            <button onClick={async () => {
+              if (!window.confirm(`"${task.title}" görevi listeden kaldırılacak.\n\nKayıt saklanır, istenirse geri getirilebilir. Devam edilsin mi?`)) return;
+              await deactivateRow("tasks", task.id, user.name); reload(); onBack();
+            }} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: "#eef0ef", color: T.sub, marginLeft: "auto" }}>Kaldır</button>
+            <button title="Bu görevi siz atadınız — silebilirsiniz" onClick={async () => {
+              if (!window.confirm(`"${task.title}" görevi, yorumları ve ekleriyle birlikte KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
+              await hardDeleteRow("tasks", task.id, user.name); reload(); onBack();
+            }} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.red, color: "#fff" }}>Kalıcı sil</button>
+          </>
         )}
-        {DENEME_MODU && isAdmin && (
-          <button title="Kalıcı sil (deneme modu)" onClick={async () => { if (window.confirm(`"${task.title}" görevi KALICI silinsin mi? Yorumlar dahil geri alınamaz.`)) { await hardDeleteRow("tasks", task.id, user.name); reload(); onBack(); } }}
-            style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.red, color: "#fff" }}>Kalıcı sil</button>
+        {task.assigned_by !== user.name && (
+          <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>
+            Bu görevi <b>{task.assigned_by}</b> atadı — yalnız o silebilir.
+          </span>
         )}
       </div>
 
