@@ -51,7 +51,7 @@ const ALL_TABS = [
   { id: "isanaliz",  label: "İş Analizi",  desc: "Görev istatistikleri ve grafikler" },
   { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
   { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
-  { id: "gorev",     label: "Görevler",    desc: "Bölge sorumlulukları, SLA" },
+  { id: "gorev",     label: "Görev atama", desc: "Bölge sorumlulukları, SLA" },
   { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
@@ -134,10 +134,14 @@ function Login({ onLogin }) {
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ ...S.card, maxWidth: 380, width: "100%", textAlign: "center" }}>
-        <div style={{ width: 52, height: 52, borderRadius: 14, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, margin: "0 auto 14px" }}>31</div>
-        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, color: T.ink }}>COP31 Atık Yönetimi</div>
-        <div style={{ fontSize: 13, color: T.sub, marginBottom: 22 }}>Antalya · Kasım 2026</div>
+      <div style={{ ...S.card, maxWidth: 400, width: "100%", textAlign: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginBottom: 18 }}>
+          <img src="/cop31.jpg" alt="COP31 Türkiye Antalya" style={{ height: 82, width: "auto", objectFit: "contain" }} />
+          <div style={{ width: 1, height: 52, background: T.line }} />
+          <img src="/abm.jpg" alt="ABM Grup" style={{ height: 40, width: "auto", objectFit: "contain" }} />
+        </div>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, color: T.ink }}>Atık Yönetim Sistemi</div>
+        <div style={{ fontSize: 13, color: T.sub, marginBottom: 22 }}>COP31 · Antalya · Kasım 2026</div>
 
         {loading ? (
           <div style={{ color: T.faint, padding: 20 }}>Yükleniyor…</div>
@@ -242,10 +246,19 @@ function App({ user, logout }) {
         width: 220, background: T.surface, borderRight: `1px solid ${T.line}`,
         display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", flexShrink: 0,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 16px", borderBottom: `1px solid ${T.line}` }}>
+        {/* Logolar */}
+        <div style={{ padding: "16px 14px 12px", borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}>
+            <img src="/cop31.jpg" alt="COP31 Türkiye Antalya" style={{ height: 52, width: "auto", objectFit: "contain" }} />
+            <div style={{ width: 1, height: 34, background: T.line, flexShrink: 0 }} />
+            <img src="/abm.jpg" alt="ABM Grup" style={{ height: 28, width: "auto", objectFit: "contain" }} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: `1px solid ${T.line}` }}>
           <div style={{ width: 34, height: 34, borderRadius: 9, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 13, flexShrink: 0 }}>31</div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13.5, color: T.ink, lineHeight: 1.15 }}>COP31 Atık</div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13.5, color: T.ink, lineHeight: 1.15 }}>Atık Yönetimi</div>
             <div style={{ fontSize: 10.5, color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isOnline ? "● Merkezi" : "○ Yerel"} · {user.name}</div>
           </div>
         </div>
@@ -873,6 +886,21 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
     cancelEdit(); reload();
   };
 
+  /* Bir departmana ait unvanlar. Departmanı boş bırakılmış unvanlar
+     "genel" sayılır ve her departmanda görünür. */
+  const rolesForDept = (deptName) => {
+    if (roles.length === 0) return FALLBACK_ROLES;
+    if (!deptName) return roles.map(r => r.name);
+    return roles.filter(r => !r.department || r.department === deptName).map(r => r.name);
+  };
+
+  /* Departman değişince, seçili unvan o departmana ait değilse temizle */
+  const deptChanged = (which, newDept) => {
+    const valid = rolesForDept(newDept);
+    if (which === "new") setF(p => ({ ...p, department: newDept, role: valid.includes(p.role) ? p.role : "" }));
+    else setE_(p => ({ ...p, department: newDept, role: valid.includes(p.role) ? p.role : "" }));
+  };
+
   const roleChanged = (which, newRole) => {
     const suggested = ROLE_TABS[newRole] || [];
     if (which === "new") setF(p => ({ ...p, role: newRole, perms: suggested }));
@@ -916,17 +944,24 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
           <input style={S.input} placeholder="Ayşe Yılmaz" value={v.name} onChange={e => onChange("name", e.target.value)} />
         </div>
         <div>
-          <label style={S.label}>Görev</label>
-          <select style={S.input} value={v.role} onChange={e => roleChanged(which, e.target.value)}>
-            {roleNames.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </div>
-        <div>
           <label style={S.label}>Departman</label>
-          <select style={S.input} value={v.department || ""} onChange={e => onChange("department", e.target.value)}>
+          <select style={S.input} value={v.department || ""} onChange={e => deptChanged(which, e.target.value)}>
             <option value="">— Seçilmedi —</option>
             {deptNames.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
+        </div>
+        <div>
+          <label style={S.label}>Görev / Unvan</label>
+          <select style={S.input} value={v.role || ""} onChange={e => roleChanged(which, e.target.value)}
+            disabled={deptNames.length > 0 && !v.department}>
+            <option value="">{deptNames.length > 0 && !v.department ? "Önce departman seçin" : "— Seçin —"}</option>
+            {rolesForDept(v.department).map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          {v.department && rolesForDept(v.department).length === 0 && (
+            <div style={{ fontSize: 11.5, color: T.amber, marginTop: -8, marginBottom: 10 }}>
+              Bu departmanda tanımlı unvan yok. "Görev &amp; Departman tanımları"ndan ekleyin.
+            </div>
+          )}
         </div>
         <div>
           <label style={S.label}>Vardiya</label>
@@ -976,14 +1011,15 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
 
       {view === "tanimlar" ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-          <LookupManager user={user} reload={reload} staff={staff} table="job_roles" items={roles.filter(r => r.id)}
-            title="Görev / Unvan" hint="Personele atanacak unvanlar (örn: Vinç Operatörü)."
-            placeholder="Örn: Vinç Operatörü" usedBy={(s, n) => s.role === n}
-            usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin." />
           <LookupManager user={user} reload={reload} staff={staff} table="departments" items={depts}
-            title="Departman" hint="Ekip birimleri (örn: Lojistik). Filtrelemede kullanılır."
+            title="1. Departman" hint="Önce ekip birimlerini tanımlayın (örn: Lojistik, Operasyon)."
             placeholder="Örn: Lojistik" usedBy={(s, n) => s.department === n}
             usedMsg="departmanı bazı personelde kullanılıyor. Önce o kişilerin departmanını değiştirin." />
+          <LookupManager user={user} reload={reload} staff={staff} table="job_roles" items={roles.filter(r => r.id)}
+            title="2. Görev / Unvan" hint="Her unvanı bir departmana bağlayın. Departman seçilmezse tüm departmanlarda görünür."
+            placeholder="Örn: Vinç Operatörü" usedBy={(s, n) => s.role === n}
+            usedMsg="görevi bazı personelde kullanılıyor. Önce o kişilerin görevini değiştirin."
+            depts={depts} withDept />
         </div>
       ) : (
         <>
@@ -1320,24 +1356,27 @@ function Targets({ user, targets, reload }) {
 
 /* ═══════════ GÖREV / UNVAN YÖNETİMİ (yalnız yönetici) ═══════════ */
 /* Görev ve departman için ortak ekle/düzenle/sil bileşeni */
-function LookupManager({ user, reload, staff, table, items, title, hint, placeholder, usedBy, usedMsg }) {
+function LookupManager({ user, reload, staff, table, items, title, hint, placeholder, usedBy, usedMsg, depts = [], withDept }) {
   const [name, setName] = useState("");
+  const [dept, setDept] = useState("");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editName, setEditName] = useState("");
+  const [editDept, setEditDept] = useState("");
+  const [openDept, setOpenDept] = useState(null); // gruplama açma/kapama
 
   const add = async () => {
     if (!name.trim() || busy) return;
     if (items.some(r => r.name.toLowerCase() === name.trim().toLowerCase())) { alert("Bu kayıt zaten var."); return; }
     setBusy(true);
-    await insertRow(table, { name: name.trim() }, user.name);
+    await insertRow(table, withDept ? { name: name.trim(), department: dept || null } : { name: name.trim() }, user.name);
     setName(""); setBusy(false); reload();
   };
-  const startEdit = (r) => { setEditId(r.id); setEditName(r.name); };
-  const cancelEdit = () => { setEditId(null); setEditName(""); };
+  const startEdit = (r) => { setEditId(r.id); setEditName(r.name); setEditDept(r.department || ""); };
+  const cancelEdit = () => { setEditId(null); setEditName(""); setEditDept(""); };
   const saveEdit = async (r) => {
     if (!editName.trim()) return;
-    await updateRow(table, r.id, { name: editName.trim() }, user.name);
+    await updateRow(table, r.id, withDept ? { name: editName.trim(), department: editDept || null } : { name: editName.trim() }, user.name);
     cancelEdit(); reload();
   };
   const remove = async (r) => {
@@ -1347,10 +1386,67 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
     reload();
   };
 
+  const row = (r) => {
+    const count = staff.filter(s => usedBy(s, r.name)).length;
+    return (
+      <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+        {editId === r.id ? (
+          <>
+            <div style={{ flex: 1 }}>
+              <input style={{ ...S.input, marginBottom: withDept ? 6 : 0, padding: "7px 10px" }} value={editName}
+                onChange={e => setEditName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveEdit(r)} autoFocus />
+              {withDept && (
+                <select style={{ ...S.input, marginBottom: 0, padding: "7px 10px", fontSize: 13 }} value={editDept} onChange={e => setEditDept(e.target.value)}>
+                  <option value="">— Tüm departmanlar (genel) —</option>
+                  {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+                </select>
+              )}
+            </div>
+            <button onClick={() => saveEdit(r)} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+            <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+          </>
+        ) : (
+          <>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{r.name}</div>
+              <div style={{ fontSize: 11.5, color: T.faint }}>
+                {count} personel
+                {withDept && (r.department
+                  ? <span style={{ color: T.green }}> · {r.department}</span>
+                  : <span style={{ color: T.amber }}> · genel</span>)}
+              </div>
+            </div>
+            <button onClick={() => startEdit(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+            <button onClick={() => remove(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  /* Unvanları departmana göre grupla (okunaklı olsun) */
+  const groups = withDept ? (() => {
+    const g = [];
+    depts.forEach(d => {
+      const list = items.filter(r => r.department === d.name);
+      if (list.length) g.push({ key: d.name, label: d.name, list });
+    });
+    const genel = items.filter(r => !r.department);
+    if (genel.length) g.push({ key: "__genel", label: "Genel (tüm departmanlar)", list: genel });
+    return g;
+  })() : null;
+
   return (
     <div style={S.card}>
       <div style={S.h2}>{title}</div>
       <div style={S.sub}>{hint}</div>
+
+      {withDept && (
+        <select style={{ ...S.input, fontSize: 13 }} value={dept} onChange={e => setDept(e.target.value)}>
+          <option value="">— Tüm departmanlar (genel) —</option>
+          {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+        </select>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <input style={{ ...S.input, marginBottom: 0 }} placeholder={placeholder} value={name}
           onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} />
@@ -1361,30 +1457,16 @@ function LookupManager({ user, reload, staff, table, items, title, hint, placeho
 
       {items.length === 0 ? (
         <div style={{ padding: "20px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Henüz kayıt yok.</div>
-      ) : items.map(r => {
-        const count = staff.filter(s => usedBy(s, r.name)).length;
-        return (
-          <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
-            {editId === r.id ? (
-              <>
-                <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px", flex: 1 }} value={editName}
-                  onChange={e => setEditName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveEdit(r)} autoFocus />
-                <button onClick={() => saveEdit(r)} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
-                <button onClick={cancelEdit} style={{ ...S.btn, padding: "7px 11px", fontSize: 12, ...S.btnGhost }}>İptal</button>
-              </>
-            ) : (
-              <>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: T.ink }}>{r.name}</div>
-                  <div style={{ fontSize: 11.5, color: T.faint }}>{count} personel</div>
-                </div>
-                <button onClick={() => startEdit(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
-                <button onClick={() => remove(r)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
-              </>
-            )}
+      ) : withDept ? (
+        groups.map(g => (
+          <div key={g.key} style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: g.key === "__genel" ? T.amber : T.green, textTransform: "uppercase", letterSpacing: 0.4, padding: "8px 0 2px", borderTop: `1px solid ${T.line}` }}>
+              {g.label} ({g.list.length})
+            </div>
+            {g.list.map(row)}
           </div>
-        );
-      })}
+        ))
+      ) : items.map(row)}
     </div>
   );
 }
