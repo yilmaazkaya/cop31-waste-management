@@ -10,6 +10,69 @@ const KEY_ = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supa = URL_ && KEY_ ? createClient(URL_, KEY_) : null;
 export const isOnline = !!supa;
 
+/* ── KİMLİK DOĞRULAMA (Supabase Auth) ──
+   Şifreler Supabase tarafında şifrelenmiş saklanır; uygulama
+   veya veritabanı üzerinden okunamaz. */
+
+/* Yönetici yeni personel oluştururken kendi oturumu düşmesin diye
+   ayrı bir istemci kullanılır (oturum saklamaz). */
+const adminClient = URL_ && KEY_
+  ? createClient(URL_, KEY_, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null;
+
+export const MIN_SIFRE = 8;
+
+export async function girisYap(email, sifre) {
+  if (!supa) return { hata: "Sistem çevrimdışı (Supabase bağlı değil)." };
+  const { data, error } = await supa.auth.signInWithPassword({ email: email.trim(), password: sifre });
+  if (error) {
+    const m = (error.message || "").toLowerCase();
+    if (m.includes("invalid")) return { hata: "E-posta veya şifre hatalı." };
+    if (m.includes("confirm")) return { hata: "E-posta doğrulanmamış. Yöneticinize başvurun." };
+    return { hata: error.message };
+  }
+  return { user: data.user };
+}
+
+export async function cikisYap() {
+  if (supa) await supa.auth.signOut();
+}
+
+export async function oturumBilgisi() {
+  if (!supa) return null;
+  const { data } = await supa.auth.getSession();
+  return data?.session?.user || null;
+}
+
+/* Yeni personel hesabı açar. Yöneticinin oturumunu etkilemez. */
+export async function hesapOlustur(email, sifre) {
+  if (!adminClient) return { hata: "Sistem çevrimdışı." };
+  const { data, error } = await adminClient.auth.signUp({ email: email.trim(), password: sifre });
+  if (error) {
+    const m = (error.message || "").toLowerCase();
+    if (m.includes("already")) return { hata: "Bu e-posta zaten kayıtlı." };
+    if (m.includes("password")) return { hata: `Şifre en az ${MIN_SIFRE} karakter olmalı.` };
+    return { hata: error.message };
+  }
+  return { id: data?.user?.id || null };
+}
+
+/* Kullanıcının kendi şifresini değiştirmesi */
+export async function sifreDegistir(yeniSifre) {
+  if (!supa) return { hata: "Sistem çevrimdışı." };
+  const { error } = await supa.auth.updateUser({ password: yeniSifre });
+  return error ? { hata: error.message } : { ok: true };
+}
+
+/* Şifremi unuttum — sıfırlama bağlantısı gönderir */
+export async function sifreSifirlaMaili(email) {
+  if (!supa) return { hata: "Sistem çevrimdışı." };
+  const { error } = await supa.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+  });
+  return error ? { hata: error.message } : { ok: true };
+}
+
 /* ── Genel veri katmanı: tablo bazlı oku/yaz, çevrimdışıysa localStorage ── */
 
 const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; } };

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area, LineChart, Line } from "recharts";
-import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail } from "./supa.js";
+import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail,
+  girisYap, cikisYap, oturumBilgisi, hesapOlustur, sifreDegistir, sifreSifirlaMaili, MIN_SIFRE } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -105,31 +106,72 @@ const S = {
 
 /* ═══════════ KÖK: GİRİŞ + UYGULAMA ═══════════ */
 export default function Root() {
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem("cop31_user")); } catch { return null; }
-  });
-  const login = (u) => { sessionStorage.setItem("cop31_user", JSON.stringify(u)); setUser(u); };
-  const logout = () => { sessionStorage.removeItem("cop31_user"); setUser(null); };
-  return user ? <App user={user} logout={logout} /> : <Login onLogin={login} />;
+  const [user, setUser] = useState(null);
+  const [yukleniyor, setYukleniyor] = useState(true);
+
+  /* Açılışta mevcut oturumu kontrol et; personel kaydıyla eşleştir */
+  const oturumYukle = useCallback(async () => {
+    if (!isOnline) {
+      // Yerel mod: Supabase yoksa kimlik doğrulama yapılamaz
+      setYukleniyor(false);
+      return;
+    }
+    const authUser = await oturumBilgisi();
+    if (!authUser) { setUser(null); setYukleniyor(false); return; }
+    const kayitlar = await fetchAll("staff");
+    const kisi = kayitlar.find(s => s.active !== false &&
+      (s.auth_id === authUser.id || (s.email || "").toLowerCase() === (authUser.email || "").toLowerCase()));
+    if (!kisi) {
+      // Auth hesabı var ama personel kaydı yok
+      await cikisYap();
+      setUser(null); setYukleniyor(false);
+      alert("Bu hesap için personel kaydı bulunamadı. Yöneticinize başvurun.");
+      return;
+    }
+    setUser({ id: kisi.id, name: kisi.name, role: kisi.role, department: kisi.department,
+      email: kisi.email, is_admin: !!kisi.is_admin, permissions: kisi.permissions || null });
+    setYukleniyor(false);
+  }, []);
+
+  useEffect(() => { oturumYukle(); }, [oturumYukle]);
+
+  const logout = async () => { await cikisYap(); setUser(null); };
+
+  if (yukleniyor) {
+    return (
+      <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", color: T.sub, fontSize: 14 }}>
+        Yükleniyor…
+      </div>
+    );
+  }
+  return user ? <App user={user} logout={logout} /> : <Login onGiris={oturumYukle} />;
 }
 
 /* ═══════════ GİRİŞ EKRANI ═══════════ */
-function Login({ onLogin }) {
-  const [staffList, setStaffList] = useState([]);
-  const [sel, setSel] = useState("");
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState("");
-  const [loading, setLoading] = useState(true);
+function Login({ onGiris }) {
+  const [email, setEmail] = useState("");
+  const [sifre, setSifre] = useState("");
+  const [hata, setHata] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [unuttum, setUnuttum] = useState(false);
+  const [bilgi, setBilgi] = useState("");
 
-  useEffect(() => {
-    fetchAll("staff").then(s => { setStaffList(s.filter(x => x.active !== false)); setLoading(false); });
-  }, []);
+  const gir = async () => {
+    if (!email.trim() || !sifre) { setHata("E-posta ve şifre girin."); return; }
+    setBusy(true); setHata("");
+    const r = await girisYap(email, sifre);
+    setBusy(false);
+    if (r.hata) { setHata(r.hata); return; }
+    onGiris();
+  };
 
-  const tryLogin = () => {
-    const u = staffList.find(s => s.id === sel);
-    if (!u) return setErr("Personel seçin.");
-    if ((u.pin || "0000") !== pin) return setErr("PIN hatalı.");
-    onLogin({ id: u.id, name: u.name, role: u.role, is_admin: !!u.is_admin, permissions: u.permissions || null });
+  const sifirla = async () => {
+    if (!email.trim()) { setHata("Önce e-posta adresinizi yazın."); return; }
+    setBusy(true); setHata(""); setBilgi("");
+    const r = await sifreSifirlaMaili(email);
+    setBusy(false);
+    if (r.hata) setHata(r.hata);
+    else { setBilgi("Sıfırlama bağlantısı e-postanıza gönderildi."); setUnuttum(false); }
   };
 
   return (
@@ -143,43 +185,57 @@ function Login({ onLogin }) {
         <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, color: T.ink }}>Atık Yönetim Sistemi</div>
         <div style={{ fontSize: 13, color: T.sub, marginBottom: 22 }}>COP31 · Antalya · Kasım 2026</div>
 
-        {loading ? (
-          <div style={{ color: T.faint, padding: 20 }}>Yükleniyor…</div>
-        ) : staffList.length === 0 ? (
-          <div style={{ fontSize: 13.5, color: T.sub, lineHeight: 1.6, textAlign: "left", background: T.amberSoft, borderRadius: 10, padding: 14 }}>
-            Sistemde kayıtlı personel yok. {isOnline
-              ? "Supabase'de schema.sql çalıştırıldığında 'Yönetici' hesabı (PIN: 1907) otomatik oluşur."
-              : "Yerel modda ilk giriş için aşağıdan 'Yerel yönetici olarak devam et' seçin."}
-            {!isOnline && (
-              <button onClick={() => onLogin({ id: "local-admin", name: "Yerel Yönetici", role: "Saha Sorumlusu", is_admin: true })}
-                style={{ ...S.btn, ...S.btnGreen, width: "100%", marginTop: 12 }}>
-                Yerel yönetici olarak devam et
-              </button>
-            )}
+        {!isOnline ? (
+          <div style={{ fontSize: 13.5, color: T.amber, background: T.amberSoft, borderRadius: 10, padding: 14, textAlign: "left", lineHeight: 1.6 }}>
+            Sistem merkezi veritabanına bağlı değil. Giriş yapılamaz.
+            Vercel'de <b>VITE_SUPABASE_URL</b> ve <b>VITE_SUPABASE_ANON_KEY</b> tanımlı olmalıdır.
           </div>
         ) : (
           <>
-            <select style={S.input} value={sel} onChange={e => { setSel(e.target.value); setErr(""); }}>
-              <option value="">Adınızı seçin</option>
-              {staffList.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
-            </select>
-            <input style={{ ...S.input, textAlign: "center", letterSpacing: 8, fontSize: 20 }} type="password" inputMode="numeric" maxLength={4}
-              placeholder="PIN" value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, "")); setErr(""); }}
-              onKeyDown={e => e.key === "Enter" && tryLogin()} />
-            {err && <div style={{ color: T.red, fontSize: 13, marginBottom: 10 }}>{err}</div>}
-            <button onClick={tryLogin} style={{ ...S.btn, ...S.btnGreen, width: "100%" }}>Giriş yap</button>
+            <div style={{ textAlign: "left" }}>
+              <label style={S.label}>E-posta</label>
+              <input style={S.input} type="email" autoComplete="username" placeholder="ornek@sirket.com"
+                value={email} onChange={e => { setEmail(e.target.value); setHata(""); }}
+                onKeyDown={e => e.key === "Enter" && (unuttum ? sifirla() : gir())} />
+              {!unuttum && (
+                <>
+                  <label style={S.label}>Şifre</label>
+                  <input style={S.input} type="password" autoComplete="current-password" placeholder="••••••••"
+                    value={sifre} onChange={e => { setSifre(e.target.value); setHata(""); }}
+                    onKeyDown={e => e.key === "Enter" && gir()} />
+                </>
+              )}
+            </div>
+
+            {hata && <div style={{ color: T.red, fontSize: 13, marginBottom: 10, textAlign: "left" }}>{hata}</div>}
+            {bilgi && <div style={{ color: T.green, fontSize: 13, marginBottom: 10, textAlign: "left" }}>{bilgi}</div>}
+
+            {unuttum ? (
+              <>
+                <button onClick={sifirla} disabled={busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: busy ? 0.5 : 1 }}>
+                  {busy ? "Gönderiliyor…" : "Sıfırlama bağlantısı gönder"}
+                </button>
+                <button onClick={() => { setUnuttum(false); setHata(""); }} style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }}>
+                  Geri dön
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={gir} disabled={busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: busy ? 0.5 : 1 }}>
+                  {busy ? "Giriş yapılıyor…" : "Giriş yap"}
+                </button>
+                <button onClick={() => { setUnuttum(true); setHata(""); setBilgi(""); }}
+                  style={{ ...S.btn, background: "transparent", color: T.sub, fontSize: 12.5, marginTop: 10 }}>
+                  Şifremi unuttum
+                </button>
+              </>
+            )}
           </>
         )}
-
-        <div style={{ marginTop: 18, fontSize: 11.5, color: T.faint }}>
-          {isOnline ? "● Merkezi veritabanına bağlı" : "○ Yerel mod — Supabase bağlı değil (kurulum: KURULUM.md)"}
-        </div>
       </div>
     </div>
   );
 }
-
-/* ═══════════ ANA UYGULAMA ═══════════ */
 function App({ user, logout }) {
   const [tab, setTab] = useState("dashboard");
   const [staff, setStaff] = useState([]);
@@ -193,6 +249,10 @@ function App({ user, logout }) {
   const [roles, setRoles] = useState([]);
   const [depts, setDepts] = useState([]);
   const [qrZone, setQrZone] = useState(null);
+  const [sifreModal, setSifreModal] = useState(false);
+  const [yeniSifre, setYeniSifre] = useState("");
+  const [yeniSifre2, setYeniSifre2] = useState("");
+  const [sifreMsg, setSifreMsg] = useState("");
 
   const reload = useCallback(async () => {
     const [s, c, w, i, a, t, z, tk, jr, dp] = await Promise.all([
@@ -284,12 +344,42 @@ function App({ user, logout }) {
         </nav>
 
         <div style={{ padding: 10, borderTop: `1px solid ${T.line}` }}>
+          <button onClick={() => setSifreModal(true)} title="Şifremi değiştir" style={{
+            ...S.btn, padding: "10px 14px", fontSize: 13, textAlign: "left", width: "100%",
+            background: "transparent", color: T.sub,
+          }}>Şifre değiştir</button>
           <button onClick={logout} title="Oturumu kapat" style={{
             ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left", width: "100%",
             background: "transparent", color: T.faint,
           }}>← Çıkış</button>
         </div>
       </aside>
+
+      {sifreModal && (
+        <div onClick={() => setSifreModal(false)} style={{ position: "fixed", inset: 0, background: "rgba(22,36,29,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} style={{ ...S.card, maxWidth: 380, width: "100%", marginBottom: 0 }}>
+            <div style={S.h2}>Şifre değiştir</div>
+            <div style={S.sub}>Yeni şifreniz en az {MIN_SIFRE} karakter olmalıdır.</div>
+            <label style={S.label}>Yeni şifre</label>
+            <input style={S.input} type="password" autoComplete="new-password" value={yeniSifre}
+              onChange={e => { setYeniSifre(e.target.value); setSifreMsg(""); }} />
+            <label style={S.label}>Yeni şifre (tekrar)</label>
+            <input style={S.input} type="password" autoComplete="new-password" value={yeniSifre2}
+              onChange={e => { setYeniSifre2(e.target.value); setSifreMsg(""); }} />
+            {sifreMsg && <div style={{ fontSize: 13, marginBottom: 10, color: sifreMsg.startsWith("✓") ? T.green : T.red }}>{sifreMsg}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={async () => {
+                if (yeniSifre.length < MIN_SIFRE) { setSifreMsg(`Şifre en az ${MIN_SIFRE} karakter olmalı.`); return; }
+                if (yeniSifre !== yeniSifre2) { setSifreMsg("Şifreler eşleşmiyor."); return; }
+                const r = await sifreDegistir(yeniSifre);
+                if (r.hata) setSifreMsg(r.hata);
+                else { setSifreMsg("✓ Şifreniz değiştirildi."); setYeniSifre(""); setYeniSifre2(""); setTimeout(() => setSifreModal(false), 1500); }
+              }} style={{ ...S.btn, ...S.btnGreen, flex: 1 }}>Kaydet</button>
+              <button onClick={() => { setSifreModal(false); setYeniSifre(""); setYeniSifre2(""); setSifreMsg(""); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* İÇERİK */}
       <main style={{ flex: 1, minWidth: 0, maxWidth: 1500, margin: "0 auto", width: "100%", padding: "26px 24px 60px" }}>
@@ -850,7 +940,7 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
   const [editId, setEditId] = useState(null);
   const [expandId, setExpandId] = useState(null);  // ekran listesini açan satır
 
-  const blank = { name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", pin: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
+  const blank = { name: "", role: firstRole, department: "", shift: SHIFTS[0], phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
   const [f, setF] = useState(blank);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [e_, setE_] = useState({});
@@ -860,11 +950,22 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
     .filter(s => staffMatches(s, fDept, fRole))
     .filter(s => !q.trim() || s.name.toLowerCase().includes(q.trim().toLowerCase()));
 
+  const [busyAdd, setBusyAdd] = useState(false);
+  const [addHata, setAddHata] = useState("");
+
   const add = async () => {
-    if (!f.name.trim() || f.pin.length !== 4) return;
-    const { perms, ...rest } = f;
-    await insertRow("staff", { ...rest, name: f.name.trim(), permissions: JSON.stringify(perms || []) }, user.name);
-    setF(blank); setShowForm(false); reload();
+    if (!f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || busyAdd) return;
+    setBusyAdd(true); setAddHata("");
+    // 1) Giriş hesabı oluştur (şifre Supabase'de şifreli saklanır)
+    const hesap = await hesapOlustur(f.email, f.sifre);
+    if (hesap.hata) { setAddHata(hesap.hata); setBusyAdd(false); return; }
+    // 2) Personel kaydını oluştur
+    const { perms, sifre, ...rest } = f;
+    await insertRow("staff", {
+      ...rest, name: f.name.trim(), email: f.email.trim().toLowerCase(),
+      auth_id: hesap.id, permissions: JSON.stringify(perms || []),
+    }, user.name);
+    setF(blank); setShowForm(false); setBusyAdd(false); reload();
   };
 
   const startEdit = (s) => {
@@ -872,14 +973,14 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
     setEditId(s.id); setExpandId(null);
-    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift, phone: s.phone || "", email: s.email || "", pin: s.pin || "", is_admin: !!s.is_admin, perms });
+    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift, phone: s.phone || "", email: s.email || "", is_admin: !!s.is_admin, perms });
   };
   const cancelEdit = () => { setEditId(null); setE_({}); };
   const saveEdit = async (s) => {
-    if (!e_.name?.trim() || (e_.pin || "").length !== 4) return;
+    if (!e_.name?.trim()) return;
     await updateRow("staff", s.id, {
       name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift,
-      phone: e_.phone || null, email: e_.email || null, pin: e_.pin, is_admin: e_.is_admin,
+      phone: e_.phone || null, email: e_.email || null, is_admin: e_.is_admin,
       permissions: JSON.stringify(e_.perms || []),
     }, user.name);
     cancelEdit(); reload();
@@ -969,17 +1070,27 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
           </select>
         </div>
         <div>
-          <label style={S.label}>PIN (4 hane)</label>
-          <input style={S.input} maxLength={4} inputMode="numeric" placeholder="****" value={v.pin}
-            onChange={e => onChange("pin", e.target.value.replace(/\D/g, ""))} />
+          <label style={S.label}>E-posta {which === "new" && <span style={{ color: T.red }}>*</span>}</label>
+          <input style={S.input} type="email" autoComplete="off" placeholder="ornek@sirket.com"
+            value={v.email} onChange={e => onChange("email", e.target.value)}
+            disabled={which === "edit"} title={which === "edit" ? "Giriş e-postası değiştirilemez" : ""} />
+          {which === "edit" && <div style={{ fontSize: 11, color: T.faint, marginTop: -8, marginBottom: 10 }}>Giriş e-postası sonradan değiştirilemez.</div>}
         </div>
+        {which === "new" && (
+          <div>
+            <label style={S.label}>Şifre <span style={{ color: T.red }}>*</span></label>
+            <input style={S.input} type="password" autoComplete="new-password" placeholder={`En az ${MIN_SIFRE} karakter`}
+              value={v.sifre || ""} onChange={e => onChange("sifre", e.target.value)} />
+            {(v.sifre || "").length > 0 && (v.sifre || "").length < MIN_SIFRE && (
+              <div style={{ fontSize: 11.5, color: T.amber, marginTop: -8, marginBottom: 10 }}>
+                Şifre en az {MIN_SIFRE} karakter olmalı.
+              </div>
+            )}
+          </div>
+        )}
         <div>
           <label style={S.label}>Telefon</label>
           <input style={S.input} placeholder="05xx…" value={v.phone} onChange={e => onChange("phone", e.target.value)} />
-        </div>
-        <div>
-          <label style={S.label}>E-posta</label>
-          <input style={S.input} type="email" placeholder="ornek@eposta.com" value={v.email} onChange={e => onChange("email", e.target.value)} />
         </div>
       </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.sub, margin: "4px 0 12px", cursor: "pointer" }}>
@@ -1026,14 +1137,17 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
           {showForm && (
             <div style={{ ...S.card, borderColor: T.green }}>
               <div style={S.h2}>Yeni personel</div>
-              <div style={S.sub}>PIN 4 haneli olmalı — personel bu kodla giriş yapar.</div>
+              <div style={S.sub}>Personel bu e-posta ve şifreyle giriş yapar. Şifre en az {MIN_SIFRE} karakter olmalıdır.</div>
               {renderFormFields({ which: "new", v: f, onChange: set, compact: true })}
+              {addHata && (
+                <div style={{ background: T.redSoft, color: T.red, borderRadius: 9, padding: 11, fontSize: 13, marginBottom: 12 }}>{addHata}</div>
+              )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={add} disabled={!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)}
-                  style={{ ...S.btn, ...S.btnGreen, opacity: (!f.name.trim() || f.pin.length !== 4 || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
-                  Personeli ekle
+                <button onClick={add} disabled={busyAdd || !f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)}
+                  style={{ ...S.btn, ...S.btnGreen, opacity: (busyAdd || !f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
+                  {busyAdd ? "Oluşturuluyor…" : "Personeli ekle"}
                 </button>
-                <button onClick={() => { setShowForm(false); setF(blank); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+                <button onClick={() => { setShowForm(false); setF(blank); setAddHata(""); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
               </div>
             </div>
           )}
@@ -1142,8 +1256,8 @@ function Personnel({ user, staff, roles = [], depts = [], cleanLogs, reload }) {
                                 <div style={{ maxWidth: 720 }}>
                                   {renderFormFields({ which: "edit", v: e_, onChange: setE, compact: true })}
                                   <div style={{ display: "flex", gap: 8 }}>
-                                    <button onClick={() => saveEdit(s)} disabled={!e_.name?.trim() || (e_.pin || "").length !== 4}
-                                      style={{ ...S.btn, ...S.btnGreen, opacity: (!e_.name?.trim() || (e_.pin || "").length !== 4) ? 0.4 : 1 }}>Kaydet</button>
+                                    <button onClick={() => saveEdit(s)} disabled={!e_.name?.trim()}
+                                      style={{ ...S.btn, ...S.btnGreen, opacity: !e_.name?.trim() ? 0.4 : 1 }}>Kaydet</button>
                                     <button onClick={cancelEdit} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
                                   </div>
                                 </div>
@@ -1316,6 +1430,27 @@ function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
 
 /* ═══════════ HEDEFLER (ISO 20121) ═══════════ */
 function Targets({ user, targets, reload }) {
+  const [yedekBusy, setYedekBusy] = useState(false);
+
+  /* Tüm veriyi tek JSON dosyası olarak indir (elle yedek) */
+  const yedekAl = async () => {
+    setYedekBusy(true);
+    try {
+      const tablolar = ["staff", "zones", "job_roles", "departments", "clean_logs",
+        "waste_logs", "incidents", "assignments", "targets", "tasks", "task_comments"];
+      const yedek = { _tarih: new Date().toISOString(), _alan: user.name, _surum: "cop31-v1" };
+      for (const t of tablolar) yedek[t] = await fetchAll(t);
+      const blob = new Blob([JSON.stringify(yedek, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `cop31_yedek_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.json`;
+      a.click();
+    } catch (e) {
+      alert("Yedek alınamadı: " + e.message);
+    }
+    setYedekBusy(false);
+  };
+
   const [vals, setVals] = useState({});
   useEffect(() => {
     setVals(Object.fromEntries(targets.map(t => [t.key, t.value])));
@@ -1345,6 +1480,18 @@ function Targets({ user, targets, reload }) {
           </div>
         ))}
       </div>
+      <div style={{ ...S.card, borderTop: `3px solid ${T.blue}` }}>
+        <div style={S.h2}>Veri yedeği</div>
+        <div style={{ fontSize: 13, color: T.sub, lineHeight: 1.6, marginBottom: 14 }}>
+          Tüm kayıtları (personel, bölge, temizlik, atık, olay, görev, yorum) tek bir dosya olarak indirir.
+          Sunucudaki otomatik yedeğe ek olarak, önemli günlerde elle de yedek almanız önerilir.
+          Dosyayı bilgisayarınızda veya bulutta saklayın.
+        </div>
+        <button onClick={yedekAl} disabled={yedekBusy} style={{ ...S.btn, ...S.btnGreen, opacity: yedekBusy ? 0.5 : 1 }}>
+          {yedekBusy ? "Hazırlanıyor…" : "Yedek indir (JSON)"}
+        </button>
+      </div>
+
       <div style={{ ...S.card, fontSize: 12.5, color: T.faint, lineHeight: 1.6 }}>
         Karbon faktörleri: geri dönüşüm {EMISSION["Geri Dönüşüm Tesisi"]}, kompost {EMISSION["Kompost Alanı"]}, depolama {EMISSION["Düzenli Depolama"]} kg CO₂e/kg;
         taşıma {EMISSION.TRANSPORT_PER_TON_KM} kg CO₂e/ton-km. Resmî raporlamada ulusal faktörlerle doğrulanmalıdır.
