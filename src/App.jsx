@@ -520,6 +520,40 @@ function kullaniciAdiOner(adSoyad) {
     .join(".");
 }
 
+/* ── HİYERARŞİ ──
+   Bir kişinin tüm astları (alt kademeler dahil). */
+function astlariniBul(staff, kisiId, gorulen = new Set()) {
+  const sonuc = [];
+  const dogrudan = staff.filter(s => s.manager_id === kisiId);
+  for (const a of dogrudan) {
+    if (gorulen.has(a.id)) continue;   // döngü koruması
+    gorulen.add(a.id);
+    sonuc.push(a);
+    sonuc.push(...astlariniBul(staff, a.id, gorulen));
+  }
+  return sonuc;
+}
+
+/* Kime görev atayabilir: yönetici herkese; diğerleri astlarına
+   ve kendi departmanındaki kişilere. */
+function atanabilirKisiler(staff, user) {
+  if (user.is_admin) return staff;
+  const astlar = astlariniBul(staff, user.id);
+  const ayniDept = user.department
+    ? staff.filter(s => s.department === user.department && s.id !== user.id)
+    : [];
+  const harita = new Map();
+  [...astlar, ...ayniDept].forEach(s => harita.set(s.id, s));
+  return [...harita.values()];
+}
+
+/* Görev geçmişine kayıt düşer */
+async function gecmiseYaz(taskId, actor, action, detail) {
+  try {
+    await insertRow("task_history", { task_id: taskId, actor, action, detail: detail || null }, actor);
+  } catch { /* geçmiş yazılamazsa işlem yine de sürsün */ }
+}
+
 /* Bir personelin filtreye uyup uymadığı */
 function staffMatches(s, dept, role) {
   if (!s) return false;
@@ -1029,7 +1063,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
   const [editId, setEditId] = useState(null);
   const [expandId, setExpandId] = useState(null);  // ekran listesini açan satır
 
-  const blank = { name: "", username: "", role: firstRole, department: "", shift: firstShift, phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
+  const blank = { name: "", username: "", role: firstRole, department: "", manager_id: "", shift: firstShift, phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
   const [f, setF] = useState(blank);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [e_, setE_] = useState({});
@@ -1073,7 +1107,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
     const { perms, sifre, ...rest } = f;
     await insertRow("staff", {
       ...rest, name: f.name.trim(), username: f.username.trim().toLowerCase(),
-      email: f.email.trim().toLowerCase(),
+      email: f.email.trim().toLowerCase(), manager_id: f.manager_id || null,
       auth_id: hesap.id, permissions: JSON.stringify(perms || []),
     }, user.name);
     setF(blank); setShowForm(false); setBusyAdd(false); reload();
@@ -1084,7 +1118,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
     setEditId(s.id); setExpandId(null); setEditHata("");
-    setE_({ name: s.name, username: s.username || "", role: s.role, department: s.department || "", shift: s.shift,
+    setE_({ name: s.name, username: s.username || "", role: s.role, department: s.department || "", manager_id: s.manager_id || "", shift: s.shift,
       phone: s.phone || "", email: s.email || "", sifre: "", is_admin: !!s.is_admin, perms,
       _hesapVar: !!(s.email && s.auth_id) });
   };
@@ -1116,7 +1150,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
     }
     await updateRow("staff", s.id, {
       name: e_.name.trim(), username: (e_.username || "").trim().toLowerCase() || null,
-      role: e_.role, department: e_.department || null, shift: e_.shift,
+      role: e_.role, department: e_.department || null, manager_id: e_.manager_id || null, shift: e_.shift,
       phone: e_.phone || null, email, auth_id, is_admin: e_.is_admin,
       permissions: JSON.stringify(e_.perms || []),
     }, user.name);
@@ -1223,6 +1257,18 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
           <select style={S.input} value={v.shift} onChange={e => onChange("shift", e.target.value)}>
             {shiftNames.map(x => <option key={x} value={x}>{x}</option>)}
           </select>
+        </div>
+        <div>
+          <label style={S.label}>Bağlı olduğu yönetici</label>
+          <select style={S.input} value={v.manager_id || ""} onChange={e => onChange("manager_id", e.target.value)}>
+            <option value="">— Yok (en üst kademe) —</option>
+            {staff.filter(x => x.id !== editId).map(x => (
+              <option key={x.id} value={x.id}>{x.name}{x.role ? ` · ${x.role}` : ""}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 11, color: T.faint, marginTop: -8, marginBottom: 10 }}>
+            Yönetici, astlarına görev atayabilir.
+          </div>
         </div>
         <div>
           <label style={S.label}>
@@ -1479,7 +1525,18 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                               </div>
                             </td>
                             <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap" }}>{s.role}</td>
-                            <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap" }}>{s.department || <span style={{ color: T.faint }}>—</span>}</td>
+                            <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap" }}>
+                              {s.department || <span style={{ color: T.faint }}>—</span>}
+                              {(() => {
+                                const yon = staff.find(x => x.id === s.manager_id);
+                                const astSayi = staff.filter(x => x.manager_id === s.id).length;
+                                return (
+                                  <div style={{ fontSize: 10.5, color: T.faint }}>
+                                    {yon ? `▲ ${yon.name}` : ""}{yon && astSayi ? " · " : ""}{astSayi ? `▼ ${astSayi} ast` : ""}
+                                  </div>
+                                );
+                              })()}
+                            </td>
                             <td style={{ padding: "11px 12px", color: T.sub, whiteSpace: "nowrap", fontSize: 12.5 }}>{s.shift}</td>
                             <td style={{ padding: "11px 12px", textAlign: "center" }}>
                               <button onClick={() => setExpandId(expandId === s.id ? null : s.id)} title={tabs.join(", ")}
@@ -1959,13 +2016,15 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
   const [filter, setFilter] = useState("acik");
   const [dept, setDept] = useState("hepsi");
   const [role, setRole] = useState("hepsi");
+  const [ara, setAra] = useState("");
+  const [sirala, setSirala] = useState("yeni");     // yeni | termin | oncelik | kisi
+  const [gorunum, setGorunum] = useState("liste");  // liste | pano
 
   const staffIds = useMemo(() => new Set(
     staff.filter(s => staffMatches(s, dept, role)).map(s => s.id)
   ), [staff, dept, role]);
   const filtering = dept !== "hepsi" || role !== "hepsi";
 
-  // Ekranı açınca kendine atanan görülmemişleri "görüldü" işaretle
   useEffect(() => {
     (async () => {
       const mine = tasks.filter(t => t.assignee_id === user.id && !t.seen);
@@ -1973,19 +2032,148 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
     })();
   }, []); // eslint-disable-line
 
-  const mineOrAll = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id))
-    .filter(t => !filtering || staffIds.has(t.assignee_id));
-  const visible = mineOrAll.filter(t => {
-    if (filter === "acik") return t.status !== "tamamlandi";
-    if (filter === "hepsi") return true;
-    return t.status === filter;
-  }).slice().reverse();
+  const today0 = new Date(new Date().toDateString());
+
+  const temel = (isAdmin ? tasks : tasks.filter(t => t.assignee_id === user.id || t.assigned_by === user.name))
+    .filter(t => !filtering || staffIds.has(t.assignee_id))
+    .filter(t => {
+      const q = ara.trim().toLowerCase();
+      if (!q) return true;
+      return (t.title || "").toLowerCase().includes(q)
+        || (t.description || "").toLowerCase().includes(q)
+        || (t.assignee_name || "").toLowerCase().includes(q);
+    });
+
+  const siralaFn = (a, b) => {
+    if (sirala === "termin") {
+      if (!a.due_date) return 1; if (!b.due_date) return -1;
+      return new Date(a.due_date) - new Date(b.due_date);
+    }
+    if (sirala === "oncelik") {
+      const w = { yuksek: 0, orta: 1, dusuk: 2 };
+      return (w[a.priority] ?? 1) - (w[b.priority] ?? 1);
+    }
+    if (sirala === "kisi") return (a.assignee_name || "").localeCompare(b.assignee_name || "", "tr");
+    return new Date(b.created_at) - new Date(a.created_at);
+  };
+
+  const visible = temel
+    .filter(t => filter === "acik" ? t.status !== "tamamlandi" : filter === "hepsi" ? true : t.status === filter)
+    .slice().sort(siralaFn);
+
+  /* ── Excel (CSV) çıktısı ── */
+  const exceleAktar = () => {
+    const bas = ["Görev", "Açıklama", "Atayan", "Sorumlu", "Departman", "Durum", "Öncelik",
+      "Oluşturma", "Termin", "Gecikme (gün)", "Tamamlanma", "Onaylayan", "Alt adım", "Devir", "Revize notu"];
+    let csv = "\uFEFF" + bas.join(";") + "\n";
+    temel.slice().sort(siralaFn).forEach(t => {
+      const c = parseCl(t.checklist);
+      const gec = (t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0)
+        ? Math.ceil((today0 - new Date(t.due_date)) / 86400000) : "";
+      const satir = [
+        t.title || "",
+        (t.description || "").replace(/[\r\n;]/g, " "),
+        t.assigned_by || "",
+        t.assignee_name || "",
+        t.department || "",
+        statOf(t.status).label,
+        priOf(t.priority).label,
+        trDate(t.created_at),
+        t.due_date ? new Date(t.due_date).toLocaleDateString("tr-TR") : "",
+        gec,
+        t.approved_at ? new Date(t.approved_at).toLocaleDateString("tr-TR") : "",
+        t.approved_by || "",
+        c.length ? `${c.filter(i => i.done).length}/${c.length}` : "",
+        t.reassign_count || 0,
+        (t.reject_note || "").replace(/[\r\n;]/g, " "),
+      ];
+      csv += satir.join(";") + "\n";
+    });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `gorevler_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
 
   if (openId) {
     const t = tasks.find(x => x.id === openId);
     if (!t) { setOpenId(null); return null; }
-    return <TaskDetail task={t} user={user} isAdmin={isAdmin} onBack={() => setOpenId(null)} reload={reload} />;
+    return <TaskDetail task={t} user={user} isAdmin={isAdmin} staff={staff} onBack={() => setOpenId(null)} reload={reload} />;
   }
+
+  /* Tek görev satırı */
+  const satir = (t) => {
+    const st = statOf(t.status), pr = priOf(t.priority);
+    const cl = parseCl(t.checklist);
+    const done = cl.filter(i => i.done).length;
+    const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0;
+    return (
+      <div key={t.id} onClick={() => setOpenId(t.id)} style={{ padding: "13px 0", borderBottom: `1px solid ${T.line}`, cursor: "pointer" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={S.tag(st.soft, st.color)}>{st.label}</span>
+          <span style={{ fontWeight: 700, fontSize: 14.5, color: T.ink, flex: 1, minWidth: 140 }}>{t.title}</span>
+          <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
+          {t.assigned_by === user.name && (
+            <button onClick={async (e) => {
+              e.stopPropagation();
+              if (!window.confirm(`"${t.title}" görevi, yorumları ve ekleriyle birlikte KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
+              await hardDeleteRow("tasks", t.id, user.name); reload();
+            }} title="Bu görevi siz atadınız — silebilirsiniz"
+              style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red, minHeight: 0 }}>Sil</button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
+          <span>→ {t.assignee_name}</span>
+          {t.department && <span style={{ color: T.faint }}>{t.department}</span>}
+          {cl.length > 0 && <span>☑ {done}/{cl.length}</span>}
+          {t.reassign_count > 0 && <span style={{ color: T.faint }}>↪ {t.reassign_count}</span>}
+          {t.due_date && <span style={{ color: overdue ? T.red : T.faint, fontWeight: overdue ? 700 : 400 }}>
+            Termin: {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " (gecikti)" : ""}
+          </span>}
+          <span style={{ marginLeft: "auto", color: T.blue, fontWeight: 600 }}>Aç →</span>
+        </div>
+      </div>
+    );
+  };
+
+  /* Kanban panosu */
+  const pano = () => (
+    <div style={{ display: "grid", gridTemplateColumns: mobil ? "1fr" : "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 }}>
+      {STATUSES.map(s => {
+        const liste = temel.filter(t => t.status === s.id).sort(siralaFn);
+        return (
+          <div key={s.id} style={{ background: "#fafbfa", borderRadius: 12, border: `1px solid ${T.line}`, padding: 10, minHeight: 120 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: s.color }} />
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{s.label}</span>
+              <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>{liste.length}</span>
+            </div>
+            {liste.length === 0 ? (
+              <div style={{ fontSize: 12, color: T.faint, textAlign: "center", padding: "14px 0" }}>—</div>
+            ) : liste.map(t => {
+              const pr = priOf(t.priority);
+              const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0;
+              return (
+                <div key={t.id} onClick={() => setOpenId(t.id)} style={{
+                  background: T.surface, borderRadius: 9, border: `1px solid ${T.line}`,
+                  padding: 10, marginBottom: 8, cursor: "pointer", borderLeft: `3px solid ${pr.color}`,
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, lineHeight: 1.4 }}>{t.title}</div>
+                  <div style={{ fontSize: 11.5, color: T.sub, marginTop: 5 }}>{t.assignee_name}</div>
+                  {t.due_date && (
+                    <div style={{ fontSize: 11, color: overdue ? T.red : T.faint, marginTop: 3, fontWeight: overdue ? 700 : 400 }}>
+                      {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " ⚠" : ""}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div>
@@ -1996,57 +2184,57 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
       <div style={{ display: "grid", gridTemplateColumns: (isAdmin && !mobil) ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
         {isAdmin && <NewTaskForm user={user} staff={staff} roles={roles} depts={depts} reload={reload} />}
 
-      <div style={S.card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-          <div style={{ flex: 1 }}>
-            <div style={S.h2}>{isAdmin ? "Tüm görevler" : "Bana atanan görevler"}</div>
-            <div style={{ fontSize: 13, color: T.sub }}>{visible.length} görev</div>
-          </div>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {[{ id: "acik", label: "Açık" }, { id: "hepsi", label: "Hepsi" }, ...STATUSES].map(s => (
-              <button key={s.id} onClick={() => setFilter(s.id)} style={{
-                ...S.btn, padding: "6px 11px", fontSize: 12,
-                background: filter === s.id ? T.green : "#fbfcfb",
-                color: filter === s.id ? "#fff" : T.sub,
-                border: `1.5px solid ${filter === s.id ? T.green : T.line}`,
-              }}>{s.label}</button>
-            ))}
-          </div>
-        </div>
-
-        {visible.length === 0 ? (
-          <div style={{ padding: "40px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
-            {isAdmin ? "Görev yok." : "Size atanmış görev yok."}
-          </div>
-        ) : visible.map(t => {
-          const st = statOf(t.status), pr = priOf(t.priority);
-          const cl = parseCl(t.checklist);
-          const done = cl.filter(i => i.done).length;
-          const overdue = t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < new Date(new Date().toDateString());
-          return (
-            <div key={t.id} onClick={() => setOpenId(t.id)} style={{ padding: "13px 0", borderBottom: `1px solid ${T.line}`, cursor: "pointer" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={S.tag(st.soft, st.color)}>{st.label}</span>
-                <span style={{ fontWeight: 700, fontSize: 14.5, color: T.ink, flex: 1, minWidth: 140 }}>{t.title}</span>
-                <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
-                {t.assigned_by === user.name && (
-                  <button onClick={async (e) => {
-                    e.stopPropagation();
-                    if (!window.confirm(`"${t.title}" görevi, yorumları ve ekleriyle birlikte KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
-                    await hardDeleteRow("tasks", t.id, user.name); reload();
-                  }} title="Bu görevi siz atadınız — silebilirsiniz"
-                    style={{ ...S.btn, padding: "4px 10px", fontSize: 11.5, background: T.redSoft, color: T.red }}>Sil</button>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
-                {isAdmin && <span>→ {t.assignee_name}</span>}
-                {cl.length > 0 && <span>☑ {done}/{cl.length}</span>}
-                {t.due_date && <span style={{ color: overdue ? T.red : T.faint, fontWeight: overdue ? 700 : 400 }}>Termin: {new Date(t.due_date).toLocaleDateString("tr-TR")}{overdue ? " (gecikti)" : ""}</span>}
-                <span style={{ marginLeft: "auto", color: T.blue, fontWeight: 600 }}>Aç →</span>
-              </div>
+        <div style={S.card}>
+          {/* Başlık + araçlar */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ flex: 1, minWidth: 120 }}>
+              <div style={S.h2}>{isAdmin ? "Tüm görevler" : "Görevlerim"}</div>
+              <div style={{ fontSize: 13, color: T.sub }}>{visible.length} görev</div>
             </div>
-          );
-        })}
+            <button onClick={() => setGorunum(g => g === "liste" ? "pano" : "liste")}
+              style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, ...S.btnGhost }}>
+              {gorunum === "liste" ? "▦ Pano" : "☰ Liste"}
+            </button>
+            <button onClick={exceleAktar} title="Excel'de açılabilir CSV indir"
+              style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, background: T.greenSoft, color: T.green }}>
+              ⤓ Excel
+            </button>
+          </div>
+
+          {/* Arama + sıralama */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <input style={{ ...S.input, marginBottom: 0, flex: 1, minWidth: 150, padding: "9px 12px", fontSize: 14 }}
+              placeholder="Görev ara…" value={ara} onChange={e => setAra(e.target.value)} />
+            <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "9px 12px", fontSize: 13.5 }}
+              value={sirala} onChange={e => setSirala(e.target.value)}>
+              <option value="yeni">En yeni</option>
+              <option value="termin">Termine göre</option>
+              <option value="oncelik">Önceliğe göre</option>
+              <option value="kisi">Kişiye göre</option>
+            </select>
+          </div>
+
+          {/* Durum sekmeleri */}
+          {gorunum === "liste" && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
+              {[{ id: "acik", label: "Açık" }, { id: "hepsi", label: "Hepsi" }, ...STATUSES].map(s => (
+                <button key={s.id} onClick={() => setFilter(s.id)} style={{
+                  ...S.btn, padding: "6px 11px", fontSize: 12, minHeight: 0,
+                  background: filter === s.id ? T.green : "#fbfcfb",
+                  color: filter === s.id ? "#fff" : T.sub,
+                  border: `1.5px solid ${filter === s.id ? T.green : T.line}`,
+                }}>{s.label}</button>
+              ))}
+            </div>
+          )}
+
+          {gorunum === "pano" ? pano() : (
+            visible.length === 0 ? (
+              <div style={{ padding: "40px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
+                {ara ? "Aramanıza uyan görev yok." : isAdmin ? "Görev yok." : "Size atanmış görev yok."}
+              </div>
+            ) : visible.map(satir)
+          )}
         </div>
       </div>
     </div>
@@ -2062,7 +2250,10 @@ function NewTaskForm({ user, staff, roles = [], depts = [], reload }) {
   const [stepText, setStepText] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const candidates = staff.filter(s => pickDept === "hepsi" || s.department === pickDept);
+  /* Kime atayabilir: yönetici herkese, diğerleri astlarına ve
+     kendi departmanındaki kişilere */
+  const yetkili = atanabilirKisiler(staff, user);
+  const candidates = yetkili.filter(s => pickDept === "hepsi" || s.department === pickDept);
 
   const addStep = () => { if (stepText.trim()) { setSteps(p => [...p, { text: stepText.trim(), done: false }]); setStepText(""); } };
 
@@ -2078,6 +2269,7 @@ function NewTaskForm({ user, staff, roles = [], depts = [], reload }) {
       checklist: JSON.stringify(steps), notify_email: p?.email || null, seen: false, notified: false,
     };
     const saved = await insertRow("tasks", row, user.name);
+    if (saved?.id) await gecmiseYaz(saved.id, user.name, "OLUŞTURMA", `${p?.name || ""} kişisine atandı`);
     if (p?.email) {
       const ok = await sendTaskEmail({ to: p.email, name: p.name, title: row.title, due: row.due_date, priority: row.priority, assignedBy: user.name });
       if (ok && saved?.id) await updateRow("tasks", saved.id, { notified: true }, user.name);
@@ -2105,6 +2297,11 @@ function NewTaskForm({ user, staff, roles = [], depts = [], reload }) {
         <option value="">Personel seçin</option>
         {candidates.map(s => <option key={s.id} value={s.id}>{s.name} — {s.role}{s.department ? ` · ${s.department}` : ""}</option>)}
       </select>
+      {candidates.length === 0 && (
+        <div style={{ fontSize: 12, color: T.amber, marginTop: -8, marginBottom: 12 }}>
+          Görev atayabileceğiniz kişi yok. Personel ekranından size bağlı astlar tanımlanmalı.
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div>
           <label style={S.label}>Termin</label>
@@ -2141,20 +2338,29 @@ function NewTaskForm({ user, staff, roles = [], depts = [], reload }) {
 }
 
 /* ── Görev detayı: kontrol listesi, dosya, yorum, onay ── */
-function TaskDetail({ task, user, isAdmin, onBack, reload }) {
+function TaskDetail({ task, user, isAdmin, staff = [], onBack, reload }) {
   const [comments, setComments] = useState([]);
+  const [history, setHistory] = useState([]);
   const [body, setBody] = useState("");
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [devretAcik, setDevretAcik] = useState(false);
+  const [devretKisi, setDevretKisi] = useState("");
+  const [devretNot, setDevretNot] = useState("");
+  const [gecmisAcik, setGecmisAcik] = useState(false);
   const st = statOf(task.status), pr = priOf(task.priority);
   const cl = parseCl(task.checklist);
   const mine = task.assignee_id === user.id;
+  const atayan = task.assigned_by === user.name;
+  /* Termin ve önceliği: atanan kişi, atayan veya yönetici değiştirebilir */
+  const duzenleyebilir = mine || atayan || isAdmin;
 
-  const loadComments = async () => {
-    const all = await fetchAll("task_comments");
-    setComments(all.filter(c => c.task_id === task.id && c.active !== false));
+  const loadAll = async () => {
+    const [c, h] = await Promise.all([fetchAll("task_comments"), fetchAll("task_history")]);
+    setComments(c.filter(x => x.task_id === task.id && x.active !== false));
+    setHistory(h.filter(x => x.task_id === task.id));
   };
-  useEffect(() => { loadComments(); }, [task.id]); // eslint-disable-line
+  useEffect(() => { loadAll(); }, [task.id]); // eslint-disable-line
 
   const toggleStep = async (i) => {
     if (!mine && !isAdmin) return;
@@ -2169,49 +2375,105 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
     let file_url = null, file_name = null;
     if (file) { const up = await uploadFile(file); if (up) { file_url = up.url; file_name = up.name; } }
     await insertRow("task_comments", { task_id: task.id, author: user.name, is_admin: isAdmin, body: body.trim() || null, file_url, file_name }, user.name);
-    setBody(""); setFile(null); setBusy(false); loadComments();
+    setBody(""); setFile(null); setBusy(false); loadAll();
   };
 
-  const changeStatus = async (status, extra = {}) => { await updateRow("tasks", task.id, { status, ...extra }, user.name); reload(); };
+  const changeStatus = async (status, extra = {}) => {
+    await updateRow("tasks", task.id, { status, ...extra }, user.name);
+    await gecmiseYaz(task.id, user.name, "DURUM", `${statOf(task.status).label} → ${statOf(status).label}`);
+    reload(); loadAll();
+  };
+
+  /* Termin değiştir */
+  const terminDegistir = async (yeni) => {
+    const eski = task.due_date ? new Date(task.due_date).toLocaleDateString("tr-TR") : "yok";
+    const yeniStr = yeni ? new Date(yeni).toLocaleDateString("tr-TR") : "yok";
+    await updateRow("tasks", task.id, { due_date: yeni || null }, user.name);
+    await gecmiseYaz(task.id, user.name, "TERMİN", `${eski} → ${yeniStr}`);
+    reload(); loadAll();
+  };
+
+  /* Öncelik değiştir */
+  const oncelikDegistir = async (yeni) => {
+    await updateRow("tasks", task.id, { priority: yeni }, user.name);
+    await gecmiseYaz(task.id, user.name, "ÖNCELİK", `${priOf(task.priority).label} → ${priOf(yeni).label}`);
+    reload(); loadAll();
+  };
+
+  /* İşi devret (paslama) */
+  const devret = async () => {
+    if (!devretKisi) return;
+    const p = staff.find(s => s.id === devretKisi);
+    if (!p) return;
+    setBusy(true);
+    await updateRow("tasks", task.id, {
+      assignee_id: p.id, assignee_name: p.name,
+      department: p.department || task.department,
+      notify_email: p.email || null, seen: false,
+      reassign_count: (task.reassign_count || 0) + 1,
+      original_assignee: task.original_assignee || task.assignee_name,
+    }, user.name);
+    await gecmiseYaz(task.id, user.name, "DEVİR", `${task.assignee_name} → ${p.name}${devretNot ? ` (${devretNot})` : ""}`);
+    if (devretNot.trim()) {
+      await insertRow("task_comments", { task_id: task.id, author: user.name, is_admin: isAdmin,
+        body: `İş ${p.name} kişisine devredildi. Not: ${devretNot.trim()}` }, user.name);
+    }
+    if (p.email) {
+      await sendTaskEmail({ to: p.email, name: p.name, title: task.title, due: task.due_date, priority: task.priority, assignedBy: user.name });
+    }
+    setDevretAcik(false); setDevretKisi(""); setDevretNot(""); setBusy(false);
+    reload(); loadAll();
+  };
 
   const sendForApproval = () => changeStatus("onay_bekliyor");
-  const approve = () => changeStatus("tamamlandi", { approved_by: user.name, approved_at: new Date().toISOString(), reject_note: null });
-  const reject = () => { const note = window.prompt("Revize gerekçesi (personele iletilecek):"); if (note !== null) changeStatus("revize", { reject_note: note || "Revize gerekli" }); };
+  const approve = async () => {
+    await updateRow("tasks", task.id, { status: "tamamlandi", approved_by: user.name, approved_at: new Date().toISOString(), reject_note: null }, user.name);
+    await gecmiseYaz(task.id, user.name, "ONAY", "Görev onaylandı ve tamamlandı");
+    reload(); loadAll();
+  };
+  const reject = async () => {
+    const note = window.prompt("Revize gerekçesi (personele iletilecek):");
+    if (note === null) return;
+    await updateRow("tasks", task.id, { status: "revize", reject_note: note || "Revize gerekli" }, user.name);
+    await gecmiseYaz(task.id, user.name, "REVİZE", note || "Revize gerekli");
+    reload(); loadAll();
+  };
+
+  /* Devredilebilecek kişiler: aynı departman + astlar (yönetici herkese) */
+  const devirAdaylari = atanabilirKisiler(staff, user).filter(s => s.id !== task.assignee_id);
+
+  const overdue = task.due_date && task.status !== "tamamlandi" && new Date(task.due_date) < new Date(new Date().toDateString());
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+    <div style={{ maxWidth: 780, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Görev listesi</button>
-        {task.assigned_by === user.name && (
+        {atayan && (
           <>
             <button onClick={async () => {
-              if (!window.confirm(`"${task.title}" görevi listeden kaldırılacak.\n\nKayıt saklanır, istenirse geri getirilebilir. Devam edilsin mi?`)) return;
+              if (!window.confirm(`"${task.title}" görevi listeden kaldırılacak.\n\nKayıt saklanır. Devam edilsin mi?`)) return;
               await deactivateRow("tasks", task.id, user.name); reload(); onBack();
             }} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: "#eef0ef", color: T.sub, marginLeft: "auto" }}>Kaldır</button>
-            <button title="Bu görevi siz atadınız — silebilirsiniz" onClick={async () => {
+            <button onClick={async () => {
               if (!window.confirm(`"${task.title}" görevi, yorumları ve ekleriyle birlikte KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
               await hardDeleteRow("tasks", task.id, user.name); reload(); onBack();
             }} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.red, color: "#fff" }}>Kalıcı sil</button>
           </>
         )}
-        {task.assigned_by !== user.name && (
-          <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>
-            Bu görevi <b>{task.assigned_by}</b> atadı — yalnız o silebilir.
-          </span>
-        )}
       </div>
 
+      {/* Başlık kartı */}
       <div style={S.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           <span style={S.tag(st.soft, st.color)}>{st.label}</span>
-          <span style={S.tag(pr.color + "1a", pr.color)}>{pr.label}</span>
-          {task.due_date && <span style={{ fontSize: 12.5, color: T.sub }}>Termin: {new Date(task.due_date).toLocaleDateString("tr-TR")}</span>}
+          {task.reassign_count > 0 && <span style={S.tag("#eef0ef", T.sub)}>↪ {task.reassign_count} kez devredildi</span>}
         </div>
         <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 19, fontWeight: 800, color: T.ink }}>{task.title}</div>
         {task.description && <div style={{ fontSize: 14, color: T.sub, marginTop: 6, lineHeight: 1.6 }}>{task.description}</div>}
-        <div style={{ fontSize: 12.5, color: T.faint, marginTop: 8 }}>
-          Atayan: {task.assigned_by} · Atanan: {task.assignee_name}
-          {task.approved_by && ` · Onaylayan: ${task.approved_by}`}
+        <div style={{ fontSize: 12.5, color: T.faint, marginTop: 10 }}>
+          Atayan: <b style={{ color: T.sub }}>{task.assigned_by}</b> · Sorumlu: <b style={{ color: T.sub }}>{task.assignee_name}</b>
+          {task.original_assignee && task.original_assignee !== task.assignee_name && <> · İlk atanan: {task.original_assignee}</>}
+          {task.approved_by && <> · Onaylayan: {task.approved_by}</>}
         </div>
         {task.status === "revize" && task.reject_note && (
           <div style={{ marginTop: 10, padding: 12, borderRadius: 10, background: T.redSoft, color: T.red, fontSize: 13 }}>
@@ -2220,6 +2482,64 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
         )}
       </div>
 
+      {/* Termin / öncelik / devir */}
+      <div style={S.card}>
+        <div style={S.h2}>Görev bilgileri</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginTop: 12 }}>
+          <div>
+            <label style={S.label}>Termin {overdue && <span style={{ color: T.red }}>(gecikti)</span>}</label>
+            <input type="date" style={{ ...S.input, marginBottom: 0, borderColor: overdue ? T.red : T.line }}
+              value={task.due_date ? String(task.due_date).slice(0, 10) : ""}
+              disabled={!duzenleyebilir || task.status === "tamamlandi"}
+              onChange={e => terminDegistir(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Öncelik</label>
+            <select style={{ ...S.input, marginBottom: 0 }} value={task.priority}
+              disabled={!duzenleyebilir || task.status === "tamamlandi"}
+              onChange={e => oncelikDegistir(e.target.value)}>
+              {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Sorumlu</label>
+            {devretAcik ? (
+              <select style={{ ...S.input, marginBottom: 0 }} value={devretKisi} onChange={e => setDevretKisi(e.target.value)} autoFocus>
+                <option value="">Kime devredilecek?</option>
+                {devirAdaylari.map(s => <option key={s.id} value={s.id}>{s.name}{s.department ? ` · ${s.department}` : ""}</option>)}
+              </select>
+            ) : (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <div style={{ ...S.input, marginBottom: 0, flex: 1, display: "flex", alignItems: "center", background: "#f4f6f5" }}>{task.assignee_name}</div>
+                {(mine || atayan || isAdmin) && task.status !== "tamamlandi" && (
+                  <button onClick={() => setDevretAcik(true)} title="Görevi başka birine devret"
+                    style={{ ...S.btn, padding: "11px 14px", fontSize: 13, background: T.blueSoft, color: T.blue }}>Devret</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {devretAcik && (
+          <div style={{ marginTop: 12, padding: 14, borderRadius: 10, background: T.blueSoft }}>
+            <label style={S.label}>Devir notu (isteğe bağlı)</label>
+            <input style={{ ...S.input, marginBottom: 10 }} placeholder="Neden devrediliyor?" value={devretNot} onChange={e => setDevretNot(e.target.value)} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={devret} disabled={!devretKisi || busy} style={{ ...S.btn, ...S.btnGreen, opacity: (!devretKisi || busy) ? 0.4 : 1 }}>
+                {busy ? "Devrediliyor…" : "Devret"}
+              </button>
+              <button onClick={() => { setDevretAcik(false); setDevretKisi(""); setDevretNot(""); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+            </div>
+            {devirAdaylari.length === 0 && (
+              <div style={{ fontSize: 12.5, color: T.amber, marginTop: 8 }}>
+                Devredebileceğiniz kişi yok. Aynı departmanda veya astınızda kayıtlı personel bulunmuyor.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Kontrol listesi */}
       {cl.length > 0 && (
         <div style={S.card}>
           <div style={S.h2}>Kontrol listesi ({cl.filter(i => i.done).length}/{cl.length})</div>
@@ -2235,7 +2555,7 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
         </div>
       )}
 
-      {/* Durum / onay aksiyonları */}
+      {/* Durum aksiyonları */}
       <div style={S.card}>
         <div style={S.h2}>Durum</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
@@ -2277,7 +2597,7 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
             <div style={{ fontSize: 13, color: T.faint, padding: "10px 0" }}>Henüz yorum yok.</div>
           ) : comments.map(c => (
             <div key={c.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 600, fontSize: 13.5, color: c.is_admin ? T.blue : T.ink }}>{c.author}{c.is_admin ? " · Yönetici" : ""}</span>
                 <span style={{ fontSize: 12, color: T.faint }}>{new Date(c.created_at).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
               </div>
@@ -2293,7 +2613,7 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
 
         <textarea style={{ ...S.input, height: 64, resize: "vertical" }} placeholder="Yorum yazın…" value={body} onChange={e => setBody(e.target.value)} />
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, flex: 1 }} />
+          <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, flex: 1, minWidth: 160 }} />
           <button onClick={addComment} disabled={(!body.trim() && !file) || busy} style={{ ...S.btn, ...S.btnGreen, opacity: ((!body.trim() && !file) || busy) ? 0.4 : 1 }}>
             {busy ? "Gönderiliyor…" : "Gönder"}
           </button>
@@ -2301,7 +2621,30 @@ function TaskDetail({ task, user, isAdmin, onBack, reload }) {
         <div style={{ fontSize: 11.5, color: T.faint, marginTop: 8 }}>
           Fotoğraflar otomatik küçültülür. Belge (PDF/Word/Excel) en fazla {FILE_LIMITS.DOC_MAX_MB} MB.
         </div>
-        {!isOnline && <div style={{ fontSize: 12, color: T.amber, marginTop: 8 }}>Yerel modda dosya yüklenmez (Supabase gerekli).</div>}
+      </div>
+
+      {/* İşlem geçmişi */}
+      <div style={S.card}>
+        <div onClick={() => setGecmisAcik(v => !v)} style={{ display: "flex", alignItems: "center", cursor: "pointer" }}>
+          <div style={{ flex: 1 }}>
+            <div style={S.h2}>İşlem geçmişi ({history.length})</div>
+            <div style={{ fontSize: 12.5, color: T.sub }}>Görevde kim ne zaman ne değiştirdi</div>
+          </div>
+          <span style={{ color: T.blue, fontSize: 13, fontWeight: 600 }}>{gecmisAcik ? "Gizle ▲" : "Göster ▼"}</span>
+        </div>
+        {gecmisAcik && (
+          <div style={{ marginTop: 12 }}>
+            {history.length === 0 ? (
+              <div style={{ fontSize: 13, color: T.faint, padding: "10px 0" }}>Kayıt yok.</div>
+            ) : history.slice().reverse().map(h => (
+              <div key={h.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13, flexWrap: "wrap" }}>
+                <span style={S.tag("#eef0ef", T.sub)}>{h.action}</span>
+                <span style={{ color: T.ink, flex: 1, minWidth: 120 }}>{h.detail}</span>
+                <span style={{ color: T.faint, fontSize: 12 }}>{h.actor} · {new Date(h.created_at).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
