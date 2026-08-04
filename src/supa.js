@@ -73,6 +73,28 @@ export async function sifreSifirlaMaili(email) {
   return error ? { hata: error.message } : { ok: true };
 }
 
+/* Yönetici, bir personelin şifresini doğrudan belirler (e-posta gerekmez).
+   İşlem sunucudaki /api/reset-password uç noktasında yapılır; yetki orada
+   yeniden doğrulanır. */
+export async function yoneticiSifreSifirla(hedefEmail, yeniSifre) {
+  if (!supa) return { hata: "Sistem çevrimdışı." };
+  const { data } = await supa.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) return { hata: "Oturumunuz bulunamadı, yeniden giriş yapın." };
+  try {
+    const r = await fetch("/api/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessToken: token, targetEmail: hedefEmail, newPassword: yeniSifre }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { hata: j.error || "Şifre sıfırlanamadı." };
+    return { ok: true };
+  } catch (e) {
+    return { hata: "Sunucuya ulaşılamadı: " + e.message };
+  }
+}
+
 /* ── Genel veri katmanı: tablo bazlı oku/yaz, çevrimdışıysa localStorage ── */
 
 const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; } };

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area, LineChart, Line } from "recharts";
 import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail,
-  girisYap, cikisYap, oturumBilgisi, hesapOlustur, sifreDegistir, sifreSifirlaMaili, MIN_SIFRE } from "./supa.js";
+  girisYap, cikisYap, oturumBilgisi, hesapOlustur, sifreDegistir, sifreSifirlaMaili, yoneticiSifreSifirla, MIN_SIFRE } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -1026,6 +1026,19 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
   const [addHata, setAddHata] = useState("");
   const [busyEdit, setBusyEdit] = useState(false);
   const [editHata, setEditHata] = useState("");
+  const [sifirlaKisi, setSifirlaKisi] = useState(null);  // şifresi sıfırlanacak personel
+  const [sifirlaSifre, setSifirlaSifre] = useState("");
+  const [sifirlaMsg, setSifirlaMsg] = useState("");
+  const [sifirlaBusy, setSifirlaBusy] = useState(false);
+
+  const sifreSifirla = async () => {
+    if (!sifirlaKisi || sifirlaSifre.length < MIN_SIFRE) return;
+    setSifirlaBusy(true); setSifirlaMsg("");
+    const r = await yoneticiSifreSifirla(sifirlaKisi.email, sifirlaSifre);
+    setSifirlaBusy(false);
+    if (r.hata) { setSifirlaMsg(r.hata); return; }
+    setSifirlaMsg("✓ Şifre güncellendi. Yeni şifreyi personele iletin.");
+  };
 
   const add = async () => {
     if (!f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || busyAdd) return;
@@ -1204,6 +1217,46 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
 
   return (
     <div>
+      {/* Şifre sıfırlama penceresi */}
+      {sifirlaKisi && (
+        <div onClick={() => setSifirlaKisi(null)} style={{ position: "fixed", inset: 0, background: "rgba(22,36,29,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} style={{ ...S.card, maxWidth: 400, width: "100%", marginBottom: 0 }}>
+            <div style={S.h2}>Şifre sıfırla</div>
+            <div style={{ fontSize: 13, color: T.sub, marginBottom: 14, lineHeight: 1.6 }}>
+              <b>{sifirlaKisi.name}</b> için yeni bir şifre belirleyin.<br />
+              <span style={{ color: T.faint, fontSize: 12.5 }}>{sifirlaKisi.email}</span>
+            </div>
+            <label style={S.label}>Yeni şifre</label>
+            <input style={S.input} type="text" autoComplete="off" placeholder={`En az ${MIN_SIFRE} karakter`}
+              value={sifirlaSifre} onChange={e => { setSifirlaSifre(e.target.value); setSifirlaMsg(""); }}
+              onKeyDown={e => e.key === "Enter" && sifreSifirla()} />
+            <button onClick={() => setSifirlaSifre(Math.random().toString(36).slice(2, 6) + Math.random().toString(36).slice(2, 6).toUpperCase())}
+              style={{ ...S.btn, ...S.btnGhost, fontSize: 12.5, padding: "8px 14px", marginBottom: 12 }}>
+              Rastgele şifre üret
+            </button>
+            {sifirlaMsg && (
+              <div style={{ fontSize: 13, marginBottom: 12, padding: 11, borderRadius: 9, lineHeight: 1.5,
+                background: sifirlaMsg.startsWith("✓") ? T.greenSoft : T.redSoft,
+                color: sifirlaMsg.startsWith("✓") ? T.green : T.red }}>
+                {sifirlaMsg}
+                {sifirlaMsg.startsWith("✓") && (
+                  <div style={{ marginTop: 8, fontFamily: "monospace", fontSize: 15, fontWeight: 700, background: "#fff", padding: "8px 10px", borderRadius: 7, color: T.ink, wordBreak: "break-all" }}>
+                    {sifirlaSifre}
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={sifreSifirla} disabled={sifirlaBusy || sifirlaSifre.length < MIN_SIFRE}
+                style={{ ...S.btn, ...S.btnGreen, flex: 1, opacity: (sifirlaBusy || sifirlaSifre.length < MIN_SIFRE) ? 0.4 : 1 }}>
+                {sifirlaBusy ? "Güncelleniyor…" : "Şifreyi güncelle"}
+              </button>
+              <button onClick={() => { setSifirlaKisi(null); setSifirlaSifre(""); setSifirlaMsg(""); }} style={{ ...S.btn, ...S.btnGhost }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Üst sekme: Ekip / Tanımlar */}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
         {[{ id: "ekip", label: `Ekip (${staff.length})` }, { id: "tanimlar", label: "Görev & Departman tanımları" }].map(v => (
@@ -1311,6 +1364,10 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                           style={{ ...S.btn, padding: "9px 14px", fontSize: 13, background: T.blueSoft, color: T.blue, flex: 1 }}>
                           {isEditing ? "Kapat" : "Düzenle"}
                         </button>
+                        {s.email && s.auth_id && (
+                          <button onClick={() => { setSifirlaKisi(s); setSifirlaSifre(""); setSifirlaMsg(""); }}
+                            style={{ ...S.btn, padding: "9px 14px", fontSize: 13, background: T.amberSoft, color: T.amber }}>Şifre</button>
+                        )}
                         {s.id !== user.id && (
                           <>
                             <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
@@ -1390,6 +1447,12 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                                 style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue, marginRight: 5 }}>
                                 {isEditing ? "Kapat" : "Düzenle"}
                               </button>
+                              {s.email && s.auth_id && (
+                                <button onClick={() => { setSifirlaKisi(s); setSifirlaSifre(""); setSifirlaMsg(""); }}
+                                  title="Şifresini sıfırla" style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.amberSoft, color: T.amber, marginRight: 5 }}>
+                                  Şifre
+                                </button>
+                              )}
                               {s.id !== user.id && (
                                 <>
                                   <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
