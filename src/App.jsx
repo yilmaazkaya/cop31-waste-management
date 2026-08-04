@@ -91,13 +91,31 @@ const T = {
   line: "#e3e8e5", green: "#1e6b45", greenSoft: "#e6f2ec", amber: "#b07d1e", amberSoft: "#faf3e3",
   red: "#b03030", redSoft: "#fbeaea", blue: "#2f6fb2", blueSoft: "#e9f1f9",
 };
+/* ── Ekran genişliği takibi (mobil uyum) ── */
+function useIsMobile(esik = 820) {
+  const [mobil, setMobil] = useState(
+    typeof window !== "undefined" ? window.innerWidth < esik : false
+  );
+  useEffect(() => {
+    const kontrol = () => setMobil(window.innerWidth < esik);
+    window.addEventListener("resize", kontrol);
+    window.addEventListener("orientationchange", kontrol);
+    kontrol();
+    return () => {
+      window.removeEventListener("resize", kontrol);
+      window.removeEventListener("orientationchange", kontrol);
+    };
+  }, [esik]);
+  return mobil;
+}
+
 const S = {
-  card: { background: T.surface, borderRadius: 14, border: `1px solid ${T.line}`, padding: 22, marginBottom: 16 },
+  card: { background: T.surface, borderRadius: 14, border: `1px solid ${T.line}`, padding: "clamp(14px, 3.5vw, 22px)", marginBottom: 14 },
   h2: { fontFamily: "'Sora', sans-serif", fontSize: 17, fontWeight: 700, color: T.ink, marginBottom: 4 },
   sub: { fontSize: 13, color: T.sub, marginBottom: 16 },
   label: { fontSize: 12, fontWeight: 600, color: T.sub, marginBottom: 6, display: "block", textTransform: "uppercase", letterSpacing: 0.4 },
-  input: { width: "100%", padding: "11px 13px", borderRadius: 10, border: `1.5px solid ${T.line}`, background: "#fbfcfb", color: T.ink, fontSize: 14, marginBottom: 14, outline: "none", boxSizing: "border-box", fontFamily: "'Inter', sans-serif" },
-  btn: { padding: "12px 22px", borderRadius: 10, border: "none", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'Inter', sans-serif" },
+  input: { width: "100%", padding: "12px 13px", borderRadius: 10, border: `1.5px solid ${T.line}`, background: "#fbfcfb", color: T.ink, fontSize: 16, marginBottom: 14, outline: "none", boxSizing: "border-box", fontFamily: "'Inter', sans-serif", maxWidth: "100%" },
+  btn: { padding: "12px 20px", borderRadius: 10, border: "none", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'Inter', sans-serif", minHeight: 42, whiteSpace: "nowrap" },
   btnGreen: { background: T.green, color: "#fff" },
   btnGhost: { background: "transparent", color: T.sub, border: `1.5px solid ${T.line}` },
   btnRed: { background: T.red, color: "#fff" },
@@ -251,6 +269,10 @@ function App({ user, logout }) {
   const [depts, setDepts] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [qrZone, setQrZone] = useState(null);
+  const mobil = useIsMobile();
+  const [menuAcik, setMenuAcik] = useState(false);
+  /* Mobil üst çubuktaki bildirim rozeti */
+  const bekleyenGorev = tasks.filter(t => t.assignee_id === user.id && !t.seen && t.status !== "tamamlandi").length;
   const [sifreModal, setSifreModal] = useState(false);
   const [yeniSifre, setYeniSifre] = useState("");
   const [yeniSifre2, setYeniSifre2] = useState("");
@@ -305,13 +327,53 @@ function App({ user, logout }) {
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, display: "flex" }}>
-      {/* SOL KENAR ÇUBUĞU */}
-      <aside style={{
+      {/* MOBİLDE ÜST ÇUBUK */}
+      {mobil && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, height: 56, zIndex: 120,
+          background: T.surface, borderBottom: `1px solid ${T.line}`,
+          display: "flex", alignItems: "center", gap: 10, padding: "0 12px",
+        }}>
+          <button onClick={() => setMenuAcik(true)} aria-label="Menü" style={{
+            ...S.btn, padding: "8px 12px", fontSize: 20, lineHeight: 1,
+            background: T.greenSoft, color: T.green,
+          }}>☰</button>
+          <img src="/cop31.jpg" alt="COP31" style={{ height: 34, width: "auto", objectFit: "contain" }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13, color: T.ink, lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {NAV.find(n => n.id === tab)?.label || "Atık Yönetimi"}
+            </div>
+            <div style={{ fontSize: 10.5, color: T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</div>
+          </div>
+          {bekleyenGorev > 0 && (
+            <span style={{ background: T.red, color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 999, minWidth: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px" }}>{bekleyenGorev}</span>
+          )}
+        </div>
+      )}
+
+      {/* Mobil menü arka planı */}
+      {mobil && menuAcik && (
+        <div onClick={() => setMenuAcik(false)} style={{ position: "fixed", inset: 0, background: "rgba(22,36,29,.45)", zIndex: 130 }} />
+      )}
+
+      {/* SOL KENAR ÇUBUĞU / MOBİL ÇEKMECE */}
+      <aside style={mobil ? {
+        width: 260, background: T.surface, borderRight: `1px solid ${T.line}`,
+        display: "flex", flexDirection: "column", position: "fixed", top: 0, bottom: 0, left: 0,
+        zIndex: 140, transform: menuAcik ? "translateX(0)" : "translateX(-100%)",
+        transition: "transform .22s ease", boxShadow: menuAcik ? "0 0 30px rgba(0,0,0,.18)" : "none",
+      } : {
         width: 220, background: T.surface, borderRight: `1px solid ${T.line}`,
         display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", flexShrink: 0,
       }}>
         {/* Logolar */}
-        <div style={{ padding: "16px 14px 12px", borderBottom: `1px solid ${T.line}` }}>
+        <div style={{ padding: "16px 14px 12px", borderBottom: `1px solid ${T.line}`, position: "relative" }}>
+          {mobil && (
+            <button onClick={() => setMenuAcik(false)} aria-label="Kapat" style={{
+              ...S.btn, position: "absolute", top: 8, right: 8, padding: "4px 10px",
+              fontSize: 16, background: "transparent", color: T.faint,
+            }}>×</button>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}>
             <img src="/cop31.jpg" alt="COP31 Türkiye Antalya" style={{ height: 52, width: "auto", objectFit: "contain" }} />
             <div style={{ width: 1, height: 34, background: T.line, flexShrink: 0 }} />
@@ -332,8 +394,8 @@ function App({ user, logout }) {
               ? tasks.filter(t => t.assignee_id === user.id && !t.seen && t.status !== "tamamlandi").length
               : 0;
             return (
-              <button key={n.id} onClick={() => setTab(n.id)} style={{
-                ...S.btn, padding: "10px 14px", fontSize: 13.5, textAlign: "left",
+              <button key={n.id} onClick={() => { setTab(n.id); setMenuAcik(false); }} style={{
+                ...S.btn, padding: mobil ? "13px 14px" : "10px 14px", fontSize: 14, textAlign: "left",
                 display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
                 background: tab === n.id ? T.greenSoft : "transparent",
                 color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
@@ -386,7 +448,10 @@ function App({ user, logout }) {
       )}
 
       {/* İÇERİK */}
-      <main style={{ flex: 1, minWidth: 0, maxWidth: 1500, margin: "0 auto", width: "100%", padding: "26px 24px 60px" }}>
+      <main style={{
+        flex: 1, minWidth: 0, maxWidth: 1500, margin: "0 auto", width: "100%",
+        padding: mobil ? "70px 12px 40px" : "26px 24px 60px",
+      }}>
         {allowed.includes(tab) && (<>
           {tab === "dashboard" && <Dashboard {...ctx} />}
           {tab === "istakip" && <TaskManager {...ctx} />}
@@ -932,6 +997,7 @@ function Incidents({ user, zones = [], incidents, reload }) {
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
 function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs, reload }) {
+  const mobil = useIsMobile();
   const shiftNames = shifts.length > 0 ? shifts.map(x => x.name) : FALLBACK_SHIFTS;
   const firstShift = shiftNames[0] || "Tam gün";
   const roleNames = roles.length > 0 ? roles.map(r => r.name) : FALLBACK_ROLES;
@@ -1212,10 +1278,70 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
             <span style={{ fontSize: 12, color: T.faint, marginLeft: "auto" }}>{shown.length} / {staff.length} personel</span>
           </div>
 
-          {/* Ekip tablosu */}
+          {/* Ekip listesi */}
           <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
             {shown.length === 0 ? (
               <div style={{ padding: 40, textAlign: "center", color: T.faint, fontSize: 13.5 }}>Kayıt bulunamadı.</div>
+            ) : mobil ? (
+              /* ── MOBİL: kart görünümü ── */
+              <div>
+                {shown.map(s => {
+                  const tabs = s.is_admin ? ["Tümü"] : allowedTabsFor(s).map(id => ALL_TABS.find(t => t.id === id)?.label).filter(Boolean);
+                  const isEditing = editId === s.id;
+                  return (
+                    <div key={s.id} style={{ padding: 14, borderBottom: `1px solid ${T.line}`, background: isEditing ? "#fafbfa" : "transparent" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                        <div style={{ width: 38, height: 38, borderRadius: 9, background: s.is_admin ? T.blueSoft : T.greenSoft, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 13, color: s.is_admin ? T.blue : T.green, flexShrink: 0 }}>
+                          {s.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>{s.name}</div>
+                          <div style={{ fontSize: 12.5, color: T.sub, marginTop: 2 }}>{s.role}</div>
+                          {s.department && <div style={{ fontSize: 12, color: T.faint }}>{s.department}</div>}
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                            {s.is_admin && <span style={S.tag(T.blueSoft, T.blue)}>Yönetici</span>}
+                            <span style={S.tag("#eef0ef", T.sub)}>{s.shift}</span>
+                            <span style={S.tag(T.greenSoft, T.green)}>{s.is_admin ? "Tüm ekranlar" : `${tabs.length} ekran`}</span>
+                            {!(s.email && s.auth_id) && <span style={S.tag(T.amberSoft, T.amber)}>⚠ giriş yok</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+                        <button onClick={() => isEditing ? cancelEdit() : startEdit(s)}
+                          style={{ ...S.btn, padding: "9px 14px", fontSize: 13, background: T.blueSoft, color: T.blue, flex: 1 }}>
+                          {isEditing ? "Kapat" : "Düzenle"}
+                        </button>
+                        {s.id !== user.id && (
+                          <>
+                            <button onClick={async () => { if (window.confirm(`"${s.name}" pasifleştirilsin mi?`)) { await deactivateRow("staff", s.id, user.name); reload(); } }}
+                              style={{ ...S.btn, padding: "9px 14px", fontSize: 13, background: "#eef0ef", color: T.sub }}>Pasif</button>
+                            <button onClick={async () => { if (window.confirm(`"${s.name}" personel kaydı ve tüm bilgileri KALICI silinecek.\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) { await hardDeleteRow("staff", s.id, user.name); reload(); } }}
+                              style={{ ...S.btn, padding: "9px 14px", fontSize: 13, background: T.red, color: "#fff" }}>Sil</button>
+                          </>
+                        )}
+                      </div>
+                      {isEditing && (
+                        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `2px solid ${T.green}` }}>
+                          {!e_._hesapVar && (
+                            <div style={{ background: T.amberSoft, color: "#7a5c17", borderRadius: 9, padding: 11, fontSize: 12.5, marginBottom: 14, lineHeight: 1.55 }}>
+                              Bu personelin <b>giriş hesabı yok</b>. E-posta ve şifre girip kaydederseniz giriş yapabilir.
+                            </div>
+                          )}
+                          {renderFormFields({ which: "edit", v: e_, onChange: setE, compact: false })}
+                          {editHata && <div style={{ background: T.redSoft, color: T.red, borderRadius: 9, padding: 11, fontSize: 13, marginBottom: 12 }}>{editHata}</div>}
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => saveEdit(s)} disabled={busyEdit || !e_.name?.trim()}
+                              style={{ ...S.btn, ...S.btnGreen, flex: 1, opacity: (busyEdit || !e_.name?.trim()) ? 0.4 : 1 }}>
+                              {busyEdit ? "Kaydediliyor…" : "Kaydet"}
+                            </button>
+                            <button onClick={cancelEdit} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", minWidth: 860, borderCollapse: "collapse", fontSize: 13, tableLayout: "auto" }}>
@@ -1717,6 +1843,7 @@ const parseCl = (s) => { try { return JSON.parse(s || "[]"); } catch { return []
 
 function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
   const isAdmin = user.is_admin;
+  const mobil = useIsMobile();
   const [openId, setOpenId] = useState(null);
   const [filter, setFilter] = useState("acik");
   const [dept, setDept] = useState("hepsi");
@@ -1755,7 +1882,7 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
         <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole}
           note={filtering ? `${visible.length} görev gösteriliyor` : null} />
       )}
-      <div style={{ display: "grid", gridTemplateColumns: isAdmin ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: (isAdmin && !mobil) ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
         {isAdmin && <NewTaskForm user={user} staff={staff} roles={roles} depts={depts} reload={reload} />}
 
       <div style={S.card}>
