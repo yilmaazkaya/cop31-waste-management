@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area, LineChart, Line } from "recharts";
+import { stilliExcelIndir } from "./excel.js";
 import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail,
   girisYap, cikisYap, oturumBilgisi, hesapOlustur, kullaniciAdiMusait, sifreDegistir, sifreSifirlaMaili, yoneticiSifreSifirla, MIN_SIFRE } from "./supa.js";
 
@@ -2061,39 +2062,90 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
     .filter(t => filter === "acik" ? t.status !== "tamamlandi" : filter === "hepsi" ? true : t.status === filter)
     .slice().sort(siralaFn);
 
-  /* ── Excel (CSV) çıktısı ── */
-  const exceleAktar = () => {
-    const bas = ["Görev", "Açıklama", "Atayan", "Sorumlu", "Departman", "Durum", "Öncelik",
-      "Oluşturma", "Termin", "Gecikme (gün)", "Tamamlanma", "Onaylayan", "Alt adım", "Devir", "Revize notu"];
-    let csv = "\uFEFF" + bas.join(";") + "\n";
-    temel.slice().sort(siralaFn).forEach(t => {
-      const c = parseCl(t.checklist);
-      const gec = (t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0)
-        ? Math.ceil((today0 - new Date(t.due_date)) / 86400000) : "";
-      const satir = [
-        t.title || "",
-        (t.description || "").replace(/[\r\n;]/g, " "),
-        t.assigned_by || "",
-        t.assignee_name || "",
-        t.department || "",
-        statOf(t.status).label,
-        priOf(t.priority).label,
-        trDate(t.created_at),
-        t.due_date ? new Date(t.due_date).toLocaleDateString("tr-TR") : "",
-        gec,
-        t.approved_at ? new Date(t.approved_at).toLocaleDateString("tr-TR") : "",
-        t.approved_by || "",
-        c.length ? `${c.filter(i => i.done).length}/${c.length}` : "",
-        t.reassign_count || 0,
-        (t.reject_note || "").replace(/[\r\n;]/g, " "),
-      ];
-      csv += satir.join(";") + "\n";
-    });
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `gorevler_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
+  /* ── Biçimli Excel çıktısı (çok sekmeli) ── */
+  const [excelBusy, setExcelBusy] = useState(false);
+  const exceleAktar = async () => {
+    setExcelBusy(true);
+    const liste = temel.slice().sort(siralaFn);
+
+    const gecikmeGun = (t) => (t.due_date && t.status !== "tamamlandi" && new Date(t.due_date) < today0)
+      ? Math.ceil((today0 - new Date(t.due_date)) / 86400000) : 0;
+
+    /* 1. sekme — görev dökümü */
+    const gorevSekmesi = {
+      ad: "Görevler",
+      baslik: "COP31 · Görev Takip Raporu",
+      basliklar: ["Görev", "Açıklama", "Atayan", "Sorumlu", "Departman", "Durum", "Öncelik",
+        "Oluşturma", "Termin", "Gecikme (gün)", "İlerleme", "Devir", "Tamamlanma", "Onaylayan", "Revize notu"],
+      sayiSutunlari: [9, 11],
+      vurguSatir: (r) => Number(r[9]) > 0,
+      satirlar: liste.map(t => {
+        const c = parseCl(t.checklist);
+        return [
+          t.title || "",
+          (t.description || "").replace(/[\r\n]/g, " "),
+          t.assigned_by || "",
+          t.assignee_name || "",
+          t.department || "",
+          statOf(t.status).label,
+          priOf(t.priority).label,
+          trDate(t.created_at),
+          t.due_date ? new Date(t.due_date).toLocaleDateString("tr-TR") : "",
+          gecikmeGun(t),
+          c.length ? `${c.filter(i => i.done).length}/${c.length}` : "",
+          t.reassign_count || 0,
+          t.approved_at ? new Date(t.approved_at).toLocaleDateString("tr-TR") : "",
+          t.approved_by || "",
+          (t.reject_note || "").replace(/[\r\n]/g, " "),
+        ];
+      }),
+      altBilgi: `Toplam ${liste.length} görev · ${liste.filter(t => t.status === "tamamlandi").length} tamamlandı · ${liste.filter(t => gecikmeGun(t) > 0).length} geciken`,
+    };
+
+    /* 2. sekme — kişi bazlı özet */
+    const kisiler = [...new Set(liste.map(t => t.assignee_name).filter(Boolean))];
+    const kisiSekmesi = {
+      ad: "Kişi Özeti",
+      baslik: "Kişi Bazlı Görev Özeti",
+      basliklar: ["Personel", "Departman", "Toplam", "Yapılacak", "Devam", "Onay bekleyen", "Tamamlanan", "Geciken", "Başarı %"],
+      sayiSutunlari: [2, 3, 4, 5, 6, 7, 8],
+      vurguSatir: (r) => Number(r[7]) > 0,
+      satirlar: kisiler.map(ad => {
+        const m = liste.filter(t => t.assignee_name === ad);
+        const tamam = m.filter(t => t.status === "tamamlandi").length;
+        return [
+          ad,
+          m[0]?.department || "",
+          m.length,
+          m.filter(t => t.status === "yapilacak").length,
+          m.filter(t => t.status === "devam").length,
+          m.filter(t => t.status === "onay_bekliyor").length,
+          tamam,
+          m.filter(t => gecikmeGun(t) > 0).length,
+          m.length ? Math.round((tamam / m.length) * 100) : 0,
+        ];
+      }).sort((a, b) => b[2] - a[2]),
+    };
+
+    /* 3. sekme — departman özeti */
+    const deptler = [...new Set(liste.map(t => t.department).filter(Boolean))];
+    const deptSekmesi = deptler.length ? {
+      ad: "Departman Özeti",
+      baslik: "Departman Bazlı Görev Özeti",
+      basliklar: ["Departman", "Toplam görev", "Tamamlanan", "Açık", "Geciken", "Başarı %"],
+      sayiSutunlari: [1, 2, 3, 4, 5],
+      vurguSatir: (r) => Number(r[4]) > 0,
+      satirlar: deptler.map(d => {
+        const m = liste.filter(t => t.department === d);
+        const tamam = m.filter(t => t.status === "tamamlandi").length;
+        return [d, m.length, tamam, m.length - tamam, m.filter(t => gecikmeGun(t) > 0).length,
+          m.length ? Math.round((tamam / m.length) * 100) : 0];
+      }).sort((a, b) => b[1] - a[1]),
+    } : null;
+
+    const sekmeler = [gorevSekmesi, kisiSekmesi, ...(deptSekmesi ? [deptSekmesi] : [])];
+    await stilliExcelIndir(sekmeler, "COP31_Gorev_Raporu");
+    setExcelBusy(false);
   };
 
   if (openId) {
@@ -2195,9 +2247,9 @@ function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
               style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, ...S.btnGhost }}>
               {gorunum === "liste" ? "▦ Pano" : "☰ Liste"}
             </button>
-            <button onClick={exceleAktar} title="Excel'de açılabilir CSV indir"
-              style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, background: T.greenSoft, color: T.green }}>
-              ⤓ Excel
+            <button onClick={exceleAktar} disabled={excelBusy} title="Biçimli Excel raporu indir"
+              style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, background: T.greenSoft, color: T.green, opacity: excelBusy ? 0.5 : 1 }}>
+              {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
             </button>
           </div>
 
@@ -3107,19 +3159,68 @@ function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks =
     ["Görev (toplam / tamamlanan)", `${scopedTasks.length} / ${scopedTasks.filter(t => t.status === "tamamlandi").length}`],
   ];
 
-  const exportCSV = () => {
-    let csv = "\uFEFFTip;Tarih;Saat;Bölge;Personel;Detay;Miktar;UATF;Lisans;km;CO2e(kg);Fotoğraf\n";
-    cleanLogs.forEach(c => { csv += `Temizlik;${trDate(c.created_at)};${trTime(c.created_at)};${c.zone};${c.staff_name};${c.action} ${c.notes || ""};;;;;;\n`; });
-    wasteLogs.forEach(w => {
-      csv += `Atık;${trDate(w.created_at)};${trTime(w.created_at)};${w.zone};${w.staff_name || ""};${WASTE_TYPES.find(t => t.id === w.type)?.name} → ${w.destination};${w.amount};${w.uatf_no || ""};${w.facility_license || ""};${w.km || 0};${carbonOf(w).toFixed(3)};${w.photo_url || ""}\n`;
-    });
-    incidents.forEach(i => { csv += `Olay;${trDate(i.created_at)};${trTime(i.created_at)};${i.zone};${i.staff_name || ""};${i.description};;;;;;${i.status}\n`; });
-    scopedTasks.forEach(t => { csv += `Görev;${trDate(t.created_at)};${trTime(t.created_at)};${t.department || ""};${t.assignee_name || ""};${t.title};;;;;;${statOf(t.status).label}\n`; });
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `cop31_rapor_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
+  const [repBusy, setRepBusy] = useState(false);
+  const exportCSV = async () => {
+    setRepBusy(true);
+
+    const ozetSekmesi = {
+      ad: "Özet",
+      baslik: "COP31 · Atık Yönetimi Özet Raporu",
+      basliklar: ["Gösterge", "Değer"],
+      satirlar: rows.map(([k, v]) => [k, String(v)]),
+    };
+
+    const temizlikSekmesi = cleanLogs.length ? {
+      ad: "Temizlik",
+      baslik: "Temizlik Kayıtları",
+      basliklar: ["Tarih", "Saat", "Bölge", "Personel", "İşlem", "Not"],
+      satirlar: cleanLogs.slice().reverse().map(c => [
+        trDate(c.created_at), trTime(c.created_at), c.zone, c.staff_name || "", c.action, c.notes || "",
+      ]),
+    } : null;
+
+    const atikSekmesi = wasteLogs.length ? {
+      ad: "Atık",
+      baslik: "Atık Kayıtları",
+      basliklar: ["Tarih", "Saat", "Bölge", "Personel", "Tür", "Miktar (kg)", "Gönderim yeri",
+        "UATF no", "Tesis lisans", "Mesafe (km)", "CO2e (kg)", "Kanıt"],
+      sayiSutunlari: [5, 9, 10],
+      satirlar: wasteLogs.slice().reverse().map(w => [
+        trDate(w.created_at), trTime(w.created_at), w.zone, w.staff_name || "",
+        WASTE_TYPES.find(t => t.id === w.type)?.name || w.type,
+        Number(w.amount) || 0, w.destination,
+        w.uatf_no || "", w.facility_license || "", Number(w.km) || 0,
+        Number(carbonOf(w).toFixed(2)), w.photo_url ? "var" : "",
+      ]),
+      altBilgi: `Toplam ${wasteLogs.reduce((a, w) => a + Number(w.amount), 0).toLocaleString("tr-TR")} kg · ${wasteLogs.reduce((a, w) => a + carbonOf(w), 0).toFixed(1)} kg CO2e`,
+    } : null;
+
+    const olaySekmesi = incidents.length ? {
+      ad: "Olaylar",
+      baslik: "Olay Bildirimleri",
+      basliklar: ["Tarih", "Saat", "Bölge", "Bildiren", "Önem", "Açıklama", "Durum"],
+      vurguSatir: (r) => r[6] === "Açık",
+      satirlar: incidents.slice().reverse().map(i => [
+        trDate(i.created_at), trTime(i.created_at), i.zone, i.staff_name || "",
+        i.severity === "high" ? "Yüksek" : i.severity === "medium" ? "Orta" : "Düşük",
+        i.description, i.status,
+      ]),
+    } : null;
+
+    const gorevSekmesi = scopedTasks.length ? {
+      ad: "Görevler",
+      baslik: "Görev Kayıtları",
+      basliklar: ["Görev", "Atayan", "Sorumlu", "Departman", "Durum", "Öncelik", "Oluşturma", "Termin"],
+      satirlar: scopedTasks.slice().reverse().map(t => [
+        t.title, t.assigned_by || "", t.assignee_name || "", t.department || "",
+        statOf(t.status).label, priOf(t.priority).label,
+        trDate(t.created_at), t.due_date ? new Date(t.due_date).toLocaleDateString("tr-TR") : "",
+      ]),
+    } : null;
+
+    const sekmeler = [ozetSekmesi, temizlikSekmesi, atikSekmesi, olaySekmesi, gorevSekmesi].filter(Boolean);
+    await stilliExcelIndir(sekmeler, "COP31_Atik_Raporu");
+    setRepBusy(false);
   };
 
   return (
@@ -3132,7 +3233,7 @@ function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks =
             <div style={S.h2}>Günlük özet rapor</div>
             <div style={{ fontSize: 13, color: T.sub }}>UNFCCC sürdürülebilirlik formatına uygun; CSV tüm ham veriyi içerir.</div>
           </div>
-          <button onClick={exportCSV} style={{ ...S.btn, ...S.btnGhost }}>Excel'e aktar (CSV)</button>
+          <button onClick={exportCSV} disabled={repBusy} style={{ ...S.btn, background: T.greenSoft, color: T.green, opacity: repBusy ? 0.5 : 1 }}>{repBusy ? "Hazırlanıyor…" : "⤓ Excel'e aktar"}</button>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
           <tbody>
