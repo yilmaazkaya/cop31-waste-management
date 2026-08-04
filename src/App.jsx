@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, AreaChart, Area, LineChart, Line } from "recharts";
 import { supa, isOnline, fetchAll, insertRow, updateRow, deactivateRow, hardDeleteRow, uploadPhoto, uploadFile, storageUsage, FILE_LIMITS, carbonOf, EMISSION, sendTaskEmail,
-  girisYap, cikisYap, oturumBilgisi, hesapOlustur, sifreDegistir, sifreSifirlaMaili, yoneticiSifreSifirla, MIN_SIFRE } from "./supa.js";
+  girisYap, cikisYap, oturumBilgisi, hesapOlustur, kullaniciAdiMusait, sifreDegistir, sifreSifirlaMaili, yoneticiSifreSifirla, MIN_SIFRE } from "./supa.js";
 
 /* ═══════════ SABİTLER ═══════════ */
 const APP_URL = typeof window !== "undefined" ? window.location.origin : "";
@@ -168,7 +168,7 @@ export default function Root() {
 
 /* ═══════════ GİRİŞ EKRANI ═══════════ */
 function Login({ onGiris }) {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState("");   // kullanıcı adı (veya e-posta)
   const [sifre, setSifre] = useState("");
   const [hata, setHata] = useState("");
   const [busy, setBusy] = useState(false);
@@ -176,7 +176,7 @@ function Login({ onGiris }) {
   const [bilgi, setBilgi] = useState("");
 
   const gir = async () => {
-    if (!email.trim() || !sifre) { setHata("E-posta ve şifre girin."); return; }
+    if (!email.trim() || !sifre) { setHata("Kullanıcı adı ve şifre girin."); return; }
     setBusy(true); setHata("");
     const r = await girisYap(email, sifre);
     setBusy(false);
@@ -185,7 +185,7 @@ function Login({ onGiris }) {
   };
 
   const sifirla = async () => {
-    if (!email.trim()) { setHata("Önce e-posta adresinizi yazın."); return; }
+    if (!email.trim() || !email.includes("@")) { setHata("Sıfırlama için e-posta adresinizi yazın."); return; }
     setBusy(true); setHata(""); setBilgi("");
     const r = await sifreSifirlaMaili(email);
     setBusy(false);
@@ -212,8 +212,9 @@ function Login({ onGiris }) {
         ) : (
           <>
             <div style={{ textAlign: "left" }}>
-              <label style={S.label}>E-posta</label>
-              <input style={S.input} type="email" autoComplete="username" placeholder="ornek@sirket.com"
+              <label style={S.label}>{unuttum ? "E-posta adresiniz" : "Kullanıcı adı"}</label>
+              <input style={S.input} type="text" autoComplete="username" autoCapitalize="none" spellCheck={false}
+                placeholder={unuttum ? "ornek@sirket.com" : "kullanici.adi"}
                 value={email} onChange={e => { setEmail(e.target.value); setHata(""); }}
                 onKeyDown={e => e.key === "Enter" && (unuttum ? sifirla() : gir())} />
               {!unuttum && (
@@ -247,6 +248,9 @@ function Login({ onGiris }) {
                   style={{ ...S.btn, background: "transparent", color: T.sub, fontSize: 12.5, marginTop: 10 }}>
                   Şifremi unuttum
                 </button>
+                <div style={{ fontSize: 11.5, color: T.faint, marginTop: 4 }}>
+                  Şifrenizi yöneticiniz de sıfırlayabilir.
+                </div>
               </>
             )}
           </>
@@ -501,6 +505,19 @@ function FilterBar({ depts = [], roles = [], dept, setDept, role, setRole, extra
       {note && <span style={{ marginLeft: "auto", fontSize: 12, color: T.faint }}>{note}</span>}
     </div>
   );
+}
+
+/* Ad Soyad'dan kullanıcı adı önerir: "Ayşe Yılmaz" -> "ayse.yilmaz" */
+function kullaniciAdiOner(adSoyad) {
+  const tr = { "ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u",
+               "Ç": "c", "Ğ": "g", "İ": "i", "I": "i", "Ö": "o", "Ş": "s", "Ü": "u" };
+  return (adSoyad || "")
+    .split("").map(k => tr[k] ?? k).join("")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/).filter(Boolean)
+    .join(".");
 }
 
 /* Bir personelin filtreye uyup uymadığı */
@@ -1012,7 +1029,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
   const [editId, setEditId] = useState(null);
   const [expandId, setExpandId] = useState(null);  // ekran listesini açan satır
 
-  const blank = { name: "", role: firstRole, department: "", shift: firstShift, phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
+  const blank = { name: "", username: "", role: firstRole, department: "", shift: firstShift, phone: "", email: "", sifre: "", is_admin: false, perms: ROLE_TABS[firstRole] || [] };
   const [f, setF] = useState(blank);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [e_, setE_] = useState({});
@@ -1020,7 +1037,11 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
 
   const shown = staff
     .filter(s => staffMatches(s, fDept, fRole))
-    .filter(s => !q.trim() || s.name.toLowerCase().includes(q.trim().toLowerCase()));
+    .filter(s => {
+      const ara = q.trim().toLowerCase();
+      if (!ara) return true;
+      return s.name.toLowerCase().includes(ara) || (s.username || "").toLowerCase().includes(ara);
+    });
 
   const [busyAdd, setBusyAdd] = useState(false);
   const [addHata, setAddHata] = useState("");
@@ -1041,15 +1062,18 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
   };
 
   const add = async () => {
-    if (!f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || busyAdd) return;
+    if (!f.name.trim() || !f.username.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || busyAdd) return;
     setBusyAdd(true); setAddHata("");
+    const musait = await kullaniciAdiMusait(f.username);
+    if (!musait) { setAddHata("Bu kullanıcı adı zaten kullanılıyor."); setBusyAdd(false); return; }
     // 1) Giriş hesabı oluştur (şifre Supabase'de şifreli saklanır)
     const hesap = await hesapOlustur(f.email, f.sifre);
     if (hesap.hata) { setAddHata(hesap.hata); setBusyAdd(false); return; }
     // 2) Personel kaydını oluştur
     const { perms, sifre, ...rest } = f;
     await insertRow("staff", {
-      ...rest, name: f.name.trim(), email: f.email.trim().toLowerCase(),
+      ...rest, name: f.name.trim(), username: f.username.trim().toLowerCase(),
+      email: f.email.trim().toLowerCase(),
       auth_id: hesap.id, permissions: JSON.stringify(perms || []),
     }, user.name);
     setF(blank); setShowForm(false); setBusyAdd(false); reload();
@@ -1060,7 +1084,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
     try { perms = s.permissions ? JSON.parse(s.permissions) : []; } catch { perms = []; }
     if (!perms.length) perms = ROLE_TABS[s.role] || [];
     setEditId(s.id); setExpandId(null); setEditHata("");
-    setE_({ name: s.name, role: s.role, department: s.department || "", shift: s.shift,
+    setE_({ name: s.name, username: s.username || "", role: s.role, department: s.department || "", shift: s.shift,
       phone: s.phone || "", email: s.email || "", sifre: "", is_admin: !!s.is_admin, perms,
       _hesapVar: !!(s.email && s.auth_id) });
   };
@@ -1086,8 +1110,13 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
       email = e_.email.trim().toLowerCase();
     }
 
+    if (e_.username?.trim()) {
+      const musait = await kullaniciAdiMusait(e_.username, s.id);
+      if (!musait) { setEditHata("Bu kullanıcı adı zaten kullanılıyor."); setBusyEdit(false); return; }
+    }
     await updateRow("staff", s.id, {
-      name: e_.name.trim(), role: e_.role, department: e_.department || null, shift: e_.shift,
+      name: e_.name.trim(), username: (e_.username || "").trim().toLowerCase() || null,
+      role: e_.role, department: e_.department || null, shift: e_.shift,
       phone: e_.phone || null, email, auth_id, is_admin: e_.is_admin,
       permissions: JSON.stringify(e_.perms || []),
     }, user.name);
@@ -1150,7 +1179,24 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
       <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr 1fr" : "1fr", gap: 10 }}>
         <div style={{ gridColumn: compact ? "1 / -1" : "auto" }}>
           <label style={S.label}>Ad Soyad</label>
-          <input style={S.input} placeholder="Ayşe Yılmaz" value={v.name} onChange={e => onChange("name", e.target.value)} />
+          <input style={S.input} placeholder="Ayşe Yılmaz" value={v.name}
+            onChange={e => {
+              onChange("name", e.target.value);
+              // Kullanıcı adı elle değiştirilmediyse isimden otomatik öner
+              if (which === "new" && !v._kaOzel) onChange("username", kullaniciAdiOner(e.target.value));
+            }} />
+        </div>
+        <div>
+          <label style={S.label}>Kullanıcı adı <span style={{ color: T.red }}>*</span></label>
+          <input style={S.input} autoCapitalize="none" spellCheck={false} placeholder="ayse.yilmaz"
+            value={v.username || ""}
+            onChange={e => {
+              onChange("username", e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ""));
+              onChange("_kaOzel", true);
+            }} />
+          <div style={{ fontSize: 11, color: T.faint, marginTop: -8, marginBottom: 10 }}>
+            Personel sisteme bu adla giriş yapar.
+          </div>
         </div>
         <div>
           <label style={S.label}>Departman</label>
@@ -1301,8 +1347,8 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                 <div style={{ background: T.redSoft, color: T.red, borderRadius: 9, padding: 11, fontSize: 13, marginBottom: 12 }}>{addHata}</div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={add} disabled={busyAdd || !f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)}
-                  style={{ ...S.btn, ...S.btnGreen, opacity: (busyAdd || !f.name.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
+                <button onClick={add} disabled={busyAdd || !f.name.trim() || !f.username.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)}
+                  style={{ ...S.btn, ...S.btnGreen, opacity: (busyAdd || !f.name.trim() || !f.username.trim() || !f.email.trim() || (f.sifre || "").length < MIN_SIFRE || (!f.is_admin && (f.perms || []).length === 0)) ? 0.4 : 1 }}>
                   {busyAdd ? "Oluşturuluyor…" : "Personeli ekle"}
                 </button>
                 <button onClick={() => { setShowForm(false); setF(blank); setAddHata(""); }} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
@@ -1349,6 +1395,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>{s.name}</div>
+                          {s.username && <div style={{ fontSize: 11.5, color: T.faint, fontFamily: "monospace" }}>@{s.username}</div>}
                           <div style={{ fontSize: 12.5, color: T.sub, marginTop: 2 }}>{s.role}</div>
                           {s.department && <div style={{ fontSize: 12, color: T.faint }}>{s.department}</div>}
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
@@ -1423,6 +1470,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
                                 </div>
                                 <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 600, color: T.ink, whiteSpace: "nowrap" }}>{s.name}</div>
+                                  {s.username && <div style={{ fontSize: 11, color: T.faint, fontFamily: "monospace" }}>@{s.username}</div>}
                                   {s.is_admin && <div style={{ fontSize: 11, color: T.blue, fontWeight: 600 }}>Yönetici</div>}
                                   {!(s.email && s.auth_id) && (
                                     <div style={{ fontSize: 10.5, color: T.amber, fontWeight: 600 }}>⚠ giriş hesabı yok</div>

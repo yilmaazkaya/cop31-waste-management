@@ -22,16 +22,44 @@ const adminClient = URL_ && KEY_
 
 export const MIN_SIFRE = 8;
 
-export async function girisYap(email, sifre) {
+export async function girisYap(kullaniciAdi, sifre) {
   if (!supa) return { hata: "Sistem çevrimdışı (Supabase bağlı değil)." };
-  const { data, error } = await supa.auth.signInWithPassword({ email: email.trim(), password: sifre });
+  const girdi = (kullaniciAdi || "").trim();
+  if (!girdi) return { hata: "Kullanıcı adı girin." };
+
+  /* Kullanıcı adından e-postayı bul. Doğrudan e-posta yazıldıysa
+     (içinde @ varsa) olduğu gibi kullanılır. */
+  let email = girdi;
+  if (!girdi.includes("@")) {
+    const { data, error } = await supa
+      .from("staff")
+      .select("email")
+      .ilike("username", girdi)
+      .limit(1);
+    if (error) return { hata: "Kullanıcı bilgisi alınamadı." };
+    if (!data || data.length === 0 || !data[0].email) {
+      return { hata: "Kullanıcı adı veya şifre hatalı." };
+    }
+    email = data[0].email;
+  }
+
+  const { data, error } = await supa.auth.signInWithPassword({ email, password: sifre });
   if (error) {
     const m = (error.message || "").toLowerCase();
-    if (m.includes("invalid")) return { hata: "E-posta veya şifre hatalı." };
-    if (m.includes("confirm")) return { hata: "E-posta doğrulanmamış. Yöneticinize başvurun." };
+    if (m.includes("invalid")) return { hata: "Kullanıcı adı veya şifre hatalı." };
+    if (m.includes("confirm")) return { hata: "Hesap doğrulanmamış. Yöneticinize başvurun." };
     return { hata: error.message };
   }
   return { user: data.user };
+}
+
+/* Kullanıcı adının boşta olup olmadığını kontrol eder */
+export async function kullaniciAdiMusait(kullaniciAdi, haricId = null) {
+  if (!supa) return true;
+  let q = supa.from("staff").select("id").ilike("username", (kullaniciAdi || "").trim());
+  const { data } = await q;
+  if (!data) return true;
+  return data.filter(r => r.id !== haricId).length === 0;
 }
 
 export async function cikisYap() {
