@@ -1035,7 +1035,7 @@ function arizaMetrik(t) {
 function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], ticketCats = [], reload }) {
   const mobil = useIsMobile();
   const isAdmin = user.is_admin;
-  const [gorunum, setGorunum] = useState("liste");   // liste | yeni | performans
+  const [gorunum, setGorunum] = useState("liste");   // liste | yeni | performans | turler
   const [acikId, setAcikId] = useState(null);
   const [fDurum, setFDurum] = useState("acik");      // acik = kapanmamışlar
   const [fDept, setFDept] = useState("hepsi");
@@ -1077,12 +1077,23 @@ function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], t
     const t = incidents.find(x => x.id === acikId);
     if (!t) { setAcikId(null); return null; }
     return <ArizaDetay ticket={t} user={user} isAdmin={isAdmin} staff={staff} zones={zones}
-      onBack={() => setAcikId(null)} reload={reload} />;
+      depts={depts} ticketCats={ticketCats} onBack={() => setAcikId(null)} reload={reload} />;
   }
 
   if (gorunum === "performans") {
     return <ArizaPerformans incidents={gorunur} depts={depts} staff={staff}
       onBack={() => setGorunum("liste")} />;
+  }
+
+  if (gorunum === "turler") {
+    return (
+      <div>
+        <button onClick={() => setGorunum("liste")} style={{ ...S.btn, ...S.btnGhost, marginBottom: 14 }}>← Arıza listesi</button>
+        <div style={{ maxWidth: 560 }}>
+          <ArizaKategoriYonetimi user={user} cats={ticketCats} depts={depts} reload={reload} />
+        </div>
+      </div>
+    );
   }
 
   /* Üst özet kartları */
@@ -1110,6 +1121,9 @@ function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], t
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <button onClick={() => setGorunum("yeni")} style={{ ...S.btn, ...S.btnGreen }}>+ Arıza bildir</button>
         <button onClick={() => setGorunum("performans")} style={{ ...S.btn, ...S.btnGhost }}>Performans raporu</button>
+        {isAdmin && (
+          <button onClick={() => setGorunum("turler")} style={{ ...S.btn, ...S.btnGhost }}>Arıza türleri & SLA</button>
+        )}
       </div>
 
       {gorunum === "yeni" && (
@@ -1302,7 +1316,7 @@ function ArizaBildir({ user, zones, depts, staff, ticketCats, onKapat, reload })
 }
 
 /* ── ARIZA DETAY ── */
-function ArizaDetay({ ticket: t, user, isAdmin, staff, zones, onBack, reload }) {
+function ArizaDetay({ ticket: t, user, isAdmin, staff, zones, depts = [], ticketCats = [], onBack, reload }) {
   const [yorumlar, setYorumlar] = useState([]);
   const [gecmis, setGecmis] = useState([]);
   const [metin, setMetin] = useState("");
@@ -1363,6 +1377,43 @@ function ArizaDetay({ ticket: t, user, isAdmin, staff, zones, onBack, reload }) 
     await updateRow("incidents", t.id, { escalated: true }, user.name);
     await gecmisYaz("ESKALASYON", "Yönetime bildirildi");
     reload(); yukle();
+  };
+
+  /* Arıza türünü değiştir — departman ve süre hedefleri de güncellenir */
+  const turDegistir = async (yeniTur) => {
+    const k = ticketCats.find(c => c.name === yeniTur);
+    const carpan = tOncelik(t.severity).carpan;
+    setBusy(true);
+    await updateRow("incidents", t.id, {
+      category: yeniTur || null,
+      assigned_dept: k?.department || t.assigned_dept,
+      sla_response_min: k ? Math.round(k.sla_response_min * carpan) : t.sla_response_min,
+      sla_resolve_min: k ? Math.round(k.sla_resolve_min * carpan) : t.sla_resolve_min,
+    }, user.name);
+    await gecmisYaz("TÜR", `${t.category || "belirsiz"} → ${yeniTur || "belirsiz"}${k?.department ? ` · ${k.department}` : ""}`);
+    setBusy(false); reload(); yukle();
+  };
+
+  /* Departmanı elle değiştir (yönlendirme düzeltmesi) */
+  const deptDegistir = async (yeniDept) => {
+    setBusy(true);
+    await updateRow("incidents", t.id, { assigned_dept: yeniDept || null, assignee_id: null, assignee_name: null }, user.name);
+    await gecmisYaz("YÖNLENDİRME", `${t.assigned_dept || "yok"} → ${yeniDept || "yok"}`);
+    setBusy(false); reload(); yukle();
+  };
+
+  /* Önceliği değiştir — SLA hedefleri yeniden hesaplanır */
+  const oncelikDegistir = async (yeni) => {
+    const k = ticketCats.find(c => c.name === t.category);
+    const carpan = tOncelik(yeni).carpan;
+    setBusy(true);
+    await updateRow("incidents", t.id, {
+      severity: yeni,
+      sla_response_min: Math.round((k?.sla_response_min ?? 30) * carpan),
+      sla_resolve_min: Math.round((k?.sla_resolve_min ?? 240) * carpan),
+    }, user.name);
+    await gecmisYaz("ÖNCELİK", `${tOncelik(t.severity).label} → ${tOncelik(yeni).label}`);
+    setBusy(false); reload(); yukle();
   };
 
   const atamaYap = async () => {
@@ -1443,6 +1494,39 @@ function ArizaDetay({ ticket: t, user, isAdmin, staff, zones, onBack, reload }) 
           </div>
         )}
       </div>
+
+      {/* Sınıflandırma — tür, departman, öncelik düzeltmesi */}
+      {yetkili && !["kapandi", "iptal"].includes(t.status) && (
+        <div style={S.card}>
+          <div style={S.h2}>Sınıflandırma</div>
+          <div style={S.sub}>Yanlış açılmışsa düzeltin — departman ve hedef süreler otomatik güncellenir.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 4 }}>
+            <div>
+              <label style={S.label}>Arıza türü</label>
+              <select style={{ ...S.input, marginBottom: 0 }} value={t.category || ""} disabled={busy}
+                onChange={e => turDegistir(e.target.value)}>
+                <option value="">— Belirsiz —</option>
+                {ticketCats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>İlgili departman</label>
+              <select style={{ ...S.input, marginBottom: 0 }} value={t.assigned_dept || ""} disabled={busy}
+                onChange={e => deptDegistir(e.target.value)}>
+                <option value="">— Atanmadı —</option>
+                {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Öncelik</label>
+              <select style={{ ...S.input, marginBottom: 0 }} value={t.severity} disabled={busy}
+                onChange={e => oncelikDegistir(e.target.value)}>
+                {TICKET_ONCELIK.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Süre / SLA paneli */}
       <div style={S.card}>
@@ -1847,7 +1931,7 @@ function ArizaPerformans({ incidents, depts, staff, onBack }) {
 }
 
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
-function Personnel({ user, staff, roles = [], depts = [], shifts = [], ticketCats = [], cleanLogs, reload }) {
+function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs, reload }) {
   const mobil = useIsMobile();
   const shiftNames = shifts.length > 0 ? shifts.map(x => x.name) : FALLBACK_SHIFTS;
   const firstShift = shiftNames[0] || "Tam gün";
@@ -2180,7 +2264,6 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], ticketCat
             title="3. Vardiya" hint="Çalışma saatleri (örn: Sabah 08-17)."
             placeholder="Örn: Sabah (08-17)" usedBy={(s, n) => s.shift === n}
             usedMsg="vardiyası bazı personelde kullanılıyor. Önce o kişilerin vardiyasını değiştirin." />
-          <ArizaKategoriYonetimi user={user} cats={ticketCats} depts={depts} reload={reload} />
         </div>
       ) : (
         <>
