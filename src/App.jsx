@@ -49,26 +49,29 @@ const FALLBACK_SHIFTS = ["Tam gün", "Sabah (08-17)", "Akşam (17-01)", "Gece (0
    ROLE_TABS: rol seçilince önerilen varsayılan ekranlar.
    Kişiye özel seçim yapılırsa (staff.permissions) o geçerli olur. */
 const ALL_TABS = [
-  /* grup: gruplandırma başlığı · ikon: sade sembol */
-  { id: "dashboard", label: "Genel durum",  grup: "ozet",     ikon: "◎", desc: "Özet, grafikler, uyarılar" },
-  { id: "saha",      label: "Saha kaydı",   grup: "operasyon", ikon: "⬚", desc: "QR ile giriş/çıkış" },
-  { id: "atik",      label: "Atık girişi",  grup: "operasyon", ikon: "⬧", desc: "Tür, kg, hedef, fotoğraf" },
-  { id: "olay",      label: "Arıza & Talep",grup: "operasyon", ikon: "⚠", desc: "Arıza bildirimi, takip, performans" },
-  { id: "stok",      label: "Stok & Malzeme",grup: "operasyon",ikon: "▤", desc: "Stok durumu, sevk, tüketim analizi" },
-  { id: "istakip",   label: "İş Takibi",    grup: "isler",    ikon: "☰", desc: "Görevler, pano ve analiz" },
-  { id: "gorev",     label: "Görev atama",  grup: "isler",    ikon: "◱", desc: "Bölge sorumlulukları, SLA" },
-  { id: "rapor",     label: "Rapor & Hedef",grup: "rapor",    ikon: "▦", desc: "Özet rapor, hedefler, Excel" },
-  { id: "personel",  label: "Personel",     grup: "yonetim",  ikon: "◍", desc: "Ekip, görev, departman, vardiya", admin: true },
-  { id: "bolge",     label: "Bölge & QR",   grup: "yonetim",  ikon: "▣", desc: "Bölge tanımları ve QR kodları", admin: true },
+  { id: "dashboard", label: "Genel durum",   grup: "ozet",   ikon: "◎", desc: "Özet, grafikler, uyarılar" },
+
+  { id: "istakip",   label: "İş Takibi",     grup: "isler",  ikon: "☰", desc: "Görevler, pano ve analiz" },
+
+  { id: "olay",      label: "Arıza & Talep", grup: "destek", ikon: "⚠", desc: "Arıza bildirimi, takip, performans" },
+  { id: "stok",      label: "Stok & Malzeme",grup: "destek", ikon: "▤", desc: "Stok durumu, sevk, tüketim analizi" },
+
+  { id: "saha",      label: "Saha kaydı",    grup: "saha",   ikon: "⬚", desc: "QR ile giriş/çıkış" },
+  { id: "atik",      label: "Atık girişi",   grup: "saha",   ikon: "⬧", desc: "Tür, kg, hedef, fotoğraf" },
+  { id: "gorev",     label: "Görev atama",   grup: "saha",   ikon: "◱", desc: "Bölge sorumlulukları, SLA" },
+  { id: "bolge",     label: "Bölge & QR",    grup: "saha",   ikon: "▣", desc: "Bölge tanımları ve QR kodları", admin: true },
+  { id: "rapor",     label: "Rapor & Hedef", grup: "saha",   ikon: "▦", desc: "Özet rapor, hedefler, Excel" },
+
+  { id: "personel",  label: "Personel",      grup: "yonetim",ikon: "◍", desc: "Ekip, görev, departman, vardiya", admin: true },
 ];
 
 /* Menü grupları — sırayla gösterilir */
 const TAB_GRUPLARI = [
-  { id: "ozet",      baslik: null },
-  { id: "operasyon", baslik: "Operasyon" },
-  { id: "isler",     baslik: "İş yönetimi" },
-  { id: "rapor",     baslik: "Raporlama" },
-  { id: "yonetim",   baslik: "Yönetim" },
+  { id: "ozet",    baslik: null },
+  { id: "isler",   baslik: "İş takibi" },
+  { id: "destek",  baslik: "Arıza & stok" },
+  { id: "saha",    baslik: "Saha operasyonu" },
+  { id: "yonetim", baslik: "Yönetim" },
 ];
 
 const ROLE_TABS = {
