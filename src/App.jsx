@@ -56,6 +56,7 @@ const ALL_TABS = [
   { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
   { id: "gorev",     label: "Görev atama", desc: "Bölge sorumlulukları, SLA" },
   { id: "olay",      label: "Arıza & Talep", desc: "Arıza bildirimi, takip, performans" },
+  { id: "stok",      label: "Stok & Malzeme", desc: "Stok durumu, sevk, tüketim analizi" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
   { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
@@ -64,11 +65,11 @@ const ALL_TABS = [
 ];
 
 const ROLE_TABS = {
-  "Temizlik":       ["saha", "istakip"],
-  "Atık Toplama":   ["atik", "istakip"],
+  "Temizlik":       ["saha", "istakip", "stok"],
+  "Atık Toplama":   ["atik", "istakip", "stok"],
   "Araç Sürücü":    ["atik", "istakip"],
   "Denetim":        ["dashboard", "istakip", "isanaliz", "olay", "gorev", "rapor"],
-  "Saha Sorumlusu": ["dashboard", "istakip", "isanaliz", "saha", "atik", "gorev", "olay", "rapor"],
+  "Saha Sorumlusu": ["dashboard", "istakip", "isanaliz", "saha", "atik", "gorev", "olay", "stok", "rapor"],
 };
 
 /* Bir kullanıcının görebileceği ekranları hesaplar. */
@@ -274,6 +275,8 @@ function App({ user, logout }) {
   const [depts, setDepts] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [ticketCats, setTicketCats] = useState([]);
+  const [stockItems, setStockItems] = useState([]);
+  const [stockMoves, setStockMoves] = useState([]);
   const [qrZone, setQrZone] = useState(null);
   const mobil = useIsMobile();
   const [menuAcik, setMenuAcik] = useState(false);
@@ -285,11 +288,12 @@ function App({ user, logout }) {
   const [sifreMsg, setSifreMsg] = useState("");
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z, tk, jr, dp, sh, tc] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk, jr, dp, sh, tc, si, sm] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
       fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
       fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"), fetchAll("departments"),
       fetchAll("shifts"), fetchAll("ticket_categories"),
+      fetchAll("stock_items"), fetchAll("stock_moves"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -303,6 +307,8 @@ function App({ user, logout }) {
     setDepts(dp.filter(x => x.active !== false));
     setShifts(sh.filter(x => x.active !== false));
     setTicketCats(tc.filter(x => x.active !== false));
+    setStockItems(si.filter(x => x.active !== false));
+    setStockMoves(sm);
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -325,7 +331,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, tasks, roles, depts, shifts, ticketCats, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, roles, depts, shifts, ticketCats, stockItems, stockMoves, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -467,6 +473,7 @@ function App({ user, logout }) {
           {tab === "atik" && <WasteEntry {...ctx} />}
           {tab === "gorev" && <Assignments {...ctx} />}
           {tab === "olay" && <Incidents {...ctx} />}
+          {tab === "stok" && <StokYonetimi {...ctx} />}
           {tab === "rapor" && <Report {...ctx} />}
           {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
           {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
@@ -4237,6 +4244,790 @@ function ArizaKategoriYonetimi({ user, cats = [], depts = [], reload }) {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   STOK / MALZEME YÖNETİMİ
+   Anlık stok, hareketlerden hesaplanır. Depo ve her bölge
+   ayrı stok noktasıdır; tüketim bölge bazında izlenir.
+   ═══════════════════════════════════════════════════════ */
+
+const DEPO = "DEPO";
+
+const HAREKET = [
+  { id: "giris",    label: "Mal kabul",  yon: "+", renk: "#1e6b45", soft: "#e6f2ec", aciklama: "Tedarikçiden depoya giriş" },
+  { id: "transfer", label: "Sevk",       yon: "→", renk: "#2f6fb2", soft: "#e9f1f9", aciklama: "Depodan bölgeye gönderim" },
+  { id: "tuketim",  label: "Tüketim",    yon: "−", renk: "#b07d1e", soft: "#faf3e3", aciklama: "Bölgede kullanım" },
+  { id: "iade",     label: "İade",       yon: "←", renk: "#2a9d8f", soft: "#e4f4f2", aciklama: "Bölgeden depoya geri" },
+  { id: "fire",     label: "Fire / zayi", yon: "−", renk: "#b03030", soft: "#fbeaea", aciklama: "Kayıp, hasar, son kullanma" },
+  { id: "sayim",    label: "Sayım düzeltme", yon: "±", renk: "#6c757d", soft: "#eef0ef", aciklama: "Fiili sayım farkı" },
+];
+const hrk = (id) => HAREKET.find(h => h.id === id) || HAREKET[0];
+
+/* Bir malzemenin belirli lokasyondaki bakiyesi */
+function bakiye(moves, itemId, loc) {
+  let b = 0;
+  for (const m of moves) {
+    if (m.item_id !== itemId) continue;
+    if (m.to_loc === loc) b += Number(m.qty) || 0;
+    if (m.from_loc === loc) b -= Number(m.qty) || 0;
+  }
+  return b;
+}
+
+/* Malzemenin tüm lokasyonlardaki toplamı */
+function toplamStok(moves, itemId) {
+  let b = 0;
+  for (const m of moves) {
+    if (m.item_id !== itemId) continue;
+    if (m.to_loc) b += Number(m.qty) || 0;
+    if (m.from_loc) b -= Number(m.qty) || 0;
+  }
+  return b;
+}
+
+/* Sayıyı okunaklı biçimde göster */
+const sayi = (n) => {
+  const v = Number(n) || 0;
+  return Number.isInteger(v) ? v.toLocaleString("tr-TR") : v.toLocaleString("tr-TR", { maximumFractionDigits: 2 });
+};
+
+function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], reload }) {
+  const mobil = useIsMobile();
+  const isAdmin = user.is_admin;
+  const [gorunum, setGorunum] = useState("durum");  // durum | hareket | bolge | analiz | tanim
+  const [ara, setAra] = useState("");
+
+  const aktifMoves = stockMoves.filter(m => m.active !== false);
+  const noktalar = [{ id: DEPO, ad: "Ana Depo" }, ...zones.map(z => ({ id: z.id, ad: z.name }))];
+
+  /* Her malzeme için özet */
+  const ozet = stockItems.map(it => {
+    const depo = bakiye(aktifMoves, it.id, DEPO);
+    const toplam = toplamStok(aktifMoves, it.id);
+    const sahada = toplam - depo;
+    const kritik = Number(it.min_level) > 0 && depo <= Number(it.min_level);
+    return { ...it, depo, sahada, toplam, kritik };
+  }).filter(it => {
+    const q = ara.trim().toLowerCase();
+    if (!q) return true;
+    return it.name.toLowerCase().includes(q) || (it.category || "").toLowerCase().includes(q) || (it.code || "").toLowerCase().includes(q);
+  });
+
+  const kritikler = ozet.filter(i => i.kritik);
+  const bugunTuketim = aktifMoves.filter(m => m.move_type === "tuketim" && isToday(m.created_at));
+  const bugunSevk = aktifMoves.filter(m => m.move_type === "transfer" && isToday(m.created_at));
+
+  const SEKME = [
+    { id: "durum",   label: "Stok durumu" },
+    { id: "hareket", label: "Hareket girişi" },
+    { id: "bolge",   label: "Bölge stokları" },
+    { id: "analiz",  label: "Tüketim analizi" },
+    ...(isAdmin ? [{ id: "tanim", label: "Malzeme tanımları" }] : []),
+  ];
+
+  return (
+    <div>
+      {/* Özet kartları */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {[
+          { l: "Malzeme çeşidi", v: stockItems.length, c: T.blue },
+          { l: "Kritik seviye", v: kritikler.length, c: kritikler.length > 0 ? T.red : T.green },
+          { l: "Bugün sevk", v: bugunSevk.length, c: T.amber },
+          { l: "Bugün tüketim", v: bugunTuketim.length, c: T.green },
+        ].map(k => (
+          <div key={k.l} style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${k.c}` }}>
+            <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{k.l}</div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 26, fontWeight: 800, color: T.ink }}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Kritik uyarı */}
+      {kritikler.length > 0 && (
+        <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8" }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: T.red, marginBottom: 8 }}>
+            ⚠ Kritik seviyedeki malzemeler
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {kritikler.map(i => (
+              <span key={i.id} style={{ ...S.tag("#fff", T.red), border: `1px solid #e5b8b8` }}>
+                {i.name}: <b>{sayi(i.depo)} {i.unit}</b> (min {sayi(i.min_level)})
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sekmeler */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {SEKME.map(v => (
+          <button key={v.id} onClick={() => setGorunum(v.id)} style={{
+            ...S.btn, padding: "9px 15px", fontSize: 13.5,
+            background: gorunum === v.id ? T.green : "#fbfcfb",
+            color: gorunum === v.id ? "#fff" : T.sub,
+            border: `1.5px solid ${gorunum === v.id ? T.green : T.line}`,
+          }}>{v.label}</button>
+        ))}
+      </div>
+
+      {gorunum === "durum" && (
+        <StokDurum ozet={ozet} ara={ara} setAra={setAra} mobil={mobil} moves={aktifMoves} />
+      )}
+      {gorunum === "hareket" && (
+        <StokHareket user={user} items={stockItems} moves={aktifMoves} noktalar={noktalar} reload={reload} isAdmin={isAdmin} mobil={mobil} />
+      )}
+      {gorunum === "bolge" && (
+        <BolgeStok items={stockItems} moves={aktifMoves} zones={zones} mobil={mobil} />
+      )}
+      {gorunum === "analiz" && (
+        <TuketimAnaliz items={stockItems} moves={aktifMoves} zones={zones} />
+      )}
+      {gorunum === "tanim" && isAdmin && (
+        <MalzemeTanim user={user} items={stockItems} reload={reload} />
+      )}
+    </div>
+  );
+}
+
+/* ── 1) STOK DURUMU ── */
+function StokDurum({ ozet, ara, setAra, mobil, moves }) {
+  const [excelBusy, setExcelBusy] = useState(false);
+
+  const excelAktar = async () => {
+    setExcelBusy(true);
+    await stilliExcelIndir([{
+      ad: "Stok Durumu", baslik: "COP31 · Stok Durum Raporu",
+      basliklar: ["Kod", "Malzeme", "Kategori", "Birim", "Depo", "Sahada", "Toplam", "Kritik seviye", "Durum"],
+      sayiSutunlari: [4, 5, 6, 7],
+      vurguSatir: (r) => r[8] === "KRİTİK",
+      satirlar: ozet.map(i => [i.code || "", i.name, i.category || "", i.unit,
+        i.depo, i.sahada, i.toplam, i.min_level || 0, i.kritik ? "KRİTİK" : "Normal"]),
+      altBilgi: `${ozet.length} malzeme · ${ozet.filter(i => i.kritik).length} kritik seviyede`,
+    }], "COP31_Stok_Durumu");
+    setExcelBusy(false);
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ flex: 1, minWidth: 120 }}>
+          <div style={S.h2}>Stok durumu</div>
+          <div style={{ fontSize: 13, color: T.sub }}>{ozet.length} malzeme</div>
+        </div>
+        <input style={{ ...S.input, marginBottom: 0, width: mobil ? "100%" : 200, padding: "9px 12px", fontSize: 14 }}
+          placeholder="Malzeme ara…" value={ara} onChange={e => setAra(e.target.value)} />
+        <button onClick={excelAktar} disabled={excelBusy}
+          style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, background: T.greenSoft, color: T.green, opacity: excelBusy ? 0.5 : 1 }}>
+          {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
+        </button>
+      </div>
+
+      {ozet.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: T.faint, fontSize: 13.5 }}>Malzeme bulunamadı.</div>
+      ) : mobil ? (
+        <div>
+          {ozet.map(i => (
+            <div key={i.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 600, fontSize: 14.5, color: T.ink, flex: 1 }}>{i.name}</span>
+                {i.kritik && <span style={S.tag(T.redSoft, T.red)}>kritik</span>}
+              </div>
+              <div style={{ display: "flex", gap: 14, marginTop: 6, fontSize: 13 }}>
+                <span style={{ color: T.sub }}>Depo: <b style={{ color: i.kritik ? T.red : T.ink }}>{sayi(i.depo)} {i.unit}</b></span>
+                <span style={{ color: T.sub }}>Sahada: <b style={{ color: T.ink }}>{sayi(i.sahada)}</b></span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 640 }}>
+            <thead>
+              <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
+                {["Malzeme", "Kategori", "Depo", "Sahada", "Toplam", "Min.", "Durum"].map((h, i) => (
+                  <th key={h} style={{ padding: "11px 12px", textAlign: i <= 1 ? "left" : "center", color: T.sub, fontWeight: 600, fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ozet.map(i => (
+                <tr key={i.id} style={{ borderBottom: `1px solid ${T.line}`, background: i.kritik ? T.redSoft : "transparent" }}>
+                  <td style={{ padding: "11px 12px", fontWeight: 600, color: T.ink }}>
+                    {i.name}
+                    {i.code && <div style={{ fontSize: 11, color: T.faint, fontFamily: "monospace" }}>{i.code}</div>}
+                  </td>
+                  <td style={{ padding: "11px 12px", color: T.sub }}>{i.category || "—"}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center", fontWeight: 700, color: i.kritik ? T.red : T.ink }}>
+                    {sayi(i.depo)} <span style={{ fontSize: 11, color: T.faint, fontWeight: 400 }}>{i.unit}</span>
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center", color: T.sub }}>{sayi(i.sahada)}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center", fontWeight: 600, color: T.ink }}>{sayi(i.toplam)}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center", color: T.faint }}>{sayi(i.min_level)}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center" }}>
+                    <span style={S.tag(i.kritik ? "#fff" : T.greenSoft, i.kritik ? T.red : T.green)}>
+                      {i.kritik ? "Kritik" : "Normal"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 2) HAREKET GİRİŞİ ── */
+function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
+  const [tip, setTip] = useState("tuketim");
+  const [f, setF] = useState({ item_id: "", qty: "", from_loc: "", to_loc: "", note: "", doc_no: "" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState(false);
+  const [mesaj, setMesaj] = useState("");
+
+  const h = hrk(tip);
+  const secili = items.find(i => i.id === f.item_id);
+
+  /* Hareket tipine göre hangi alanlar gerekli */
+  const kaynakGerek = ["transfer", "tuketim", "iade", "fire"].includes(tip);
+  const hedefGerek  = ["giris", "transfer", "iade"].includes(tip);
+
+  /* Kaynak lokasyondaki mevcut bakiye */
+  const mevcut = f.item_id && f.from_loc ? bakiye(moves, f.item_id, f.from_loc) : null;
+  const yetersiz = mevcut !== null && Number(f.qty) > mevcut && tip !== "sayim";
+
+  useEffect(() => {
+    /* Tip değişince varsayılan lokasyonları ayarla */
+    if (tip === "giris")    setF(p => ({ ...p, from_loc: "", to_loc: DEPO }));
+    if (tip === "transfer") setF(p => ({ ...p, from_loc: DEPO, to_loc: "" }));
+    if (tip === "tuketim")  setF(p => ({ ...p, from_loc: "", to_loc: "" }));
+    if (tip === "iade")     setF(p => ({ ...p, from_loc: "", to_loc: DEPO }));
+    if (tip === "fire")     setF(p => ({ ...p, from_loc: "", to_loc: "" }));
+  }, [tip]);
+
+  const gecerli = f.item_id && Number(f.qty) > 0
+    && (!kaynakGerek || f.from_loc) && (!hedefGerek || f.to_loc) && !yetersiz;
+
+  const kaydet = async () => {
+    if (!gecerli || busy) return;
+    setBusy(true);
+    await insertRow("stock_moves", {
+      item_id: f.item_id, item_name: secili?.name || "",
+      move_type: tip, qty: Number(f.qty), unit: secili?.unit || "",
+      from_loc: kaynakGerek ? f.from_loc : null,
+      to_loc: hedefGerek ? f.to_loc : null,
+      note: f.note || null, doc_no: f.doc_no || null, staff_name: user.name,
+    }, user.name);
+    setF(p => ({ ...p, item_id: "", qty: "", note: "", doc_no: "" }));
+    setBusy(false); setMesaj("✓ Hareket kaydedildi");
+    setTimeout(() => setMesaj(""), 2500);
+    reload();
+  };
+
+  const sonHareketler = moves.slice(-15).reverse();
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: mobil ? "1fr" : "minmax(320px, 420px) 1fr", gap: 16, alignItems: "start" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Stok hareketi</div>
+        <div style={S.sub}>{h.aciklama}</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 6, marginBottom: 14 }}>
+          {HAREKET.filter(x => isAdmin || !["giris", "sayim"].includes(x.id)).map(x => (
+            <button key={x.id} onClick={() => setTip(x.id)} style={{
+              ...S.btn, padding: "10px 8px", fontSize: 12.5,
+              background: tip === x.id ? x.renk : "#fbfcfb",
+              color: tip === x.id ? "#fff" : T.sub,
+              border: `1.5px solid ${tip === x.id ? x.renk : T.line}`,
+            }}>{x.label}</button>
+          ))}
+        </div>
+
+        <label style={S.label}>Malzeme <span style={{ color: T.red }}>*</span></label>
+        <select style={S.input} value={f.item_id} onChange={e => set("item_id", e.target.value)}>
+          <option value="">Seçin</option>
+          {items.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+        </select>
+
+        {kaynakGerek && (
+          <>
+            <label style={S.label}>Nereden <span style={{ color: T.red }}>*</span></label>
+            <select style={S.input} value={f.from_loc} onChange={e => set("from_loc", e.target.value)}>
+              <option value="">Seçin</option>
+              {noktalar.map(n => <option key={n.id} value={n.id}>{n.id === DEPO ? n.ad : `${n.id} — ${n.ad}`}</option>)}
+            </select>
+          </>
+        )}
+
+        {hedefGerek && (
+          <>
+            <label style={S.label}>Nereye <span style={{ color: T.red }}>*</span></label>
+            <select style={S.input} value={f.to_loc} onChange={e => set("to_loc", e.target.value)}>
+              <option value="">Seçin</option>
+              {noktalar.map(n => <option key={n.id} value={n.id}>{n.id === DEPO ? n.ad : `${n.id} — ${n.ad}`}</option>)}
+            </select>
+          </>
+        )}
+
+        <label style={S.label}>Miktar <span style={{ color: T.red }}>*</span> {secili && <span style={{ color: T.faint }}>({secili.unit})</span>}</label>
+        <input style={{ ...S.input, borderColor: yetersiz ? T.red : T.line }} type="number" min="0" step="0.01"
+          placeholder="0" value={f.qty} onChange={e => set("qty", e.target.value)} />
+        {mevcut !== null && (
+          <div style={{ fontSize: 12, color: yetersiz ? T.red : T.faint, marginTop: -9, marginBottom: 12 }}>
+            Seçilen noktadaki mevcut: <b>{sayi(mevcut)} {secili?.unit}</b>
+            {yetersiz && " — yetersiz stok!"}
+          </div>
+        )}
+
+        {tip === "giris" && (
+          <>
+            <label style={S.label}>İrsaliye / fatura no</label>
+            <input style={S.input} placeholder="Örn: A-2026/1451" value={f.doc_no} onChange={e => set("doc_no", e.target.value)} />
+          </>
+        )}
+
+        <label style={S.label}>Not</label>
+        <input style={S.input} placeholder="İsteğe bağlı açıklama" value={f.note} onChange={e => set("note", e.target.value)} />
+
+        <button onClick={kaydet} disabled={!gecerli || busy}
+          style={{ ...S.btn, background: h.renk, color: "#fff", width: "100%", opacity: (!gecerli || busy) ? 0.4 : 1 }}>
+          {busy ? "Kaydediliyor…" : `${h.label} kaydet`}
+        </button>
+        {mesaj && (
+          <div style={{ marginTop: 12, padding: 11, borderRadius: 9, background: T.greenSoft, color: T.green, fontSize: 13.5, textAlign: "center", fontWeight: 600 }}>
+            {mesaj}
+          </div>
+        )}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Son hareketler</div>
+        <div style={{ marginTop: 10 }}>
+          {sonHareketler.length === 0 ? (
+            <div style={{ padding: "30px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Hareket yok.</div>
+          ) : sonHareketler.map(m => {
+            const hh = hrk(m.move_type);
+            return (
+              <div key={m.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={S.tag(hh.soft, hh.renk)}>{hh.label}</span>
+                  <span style={{ fontWeight: 600, fontSize: 13.5, color: T.ink, flex: 1, minWidth: 120 }}>{m.item_name}</span>
+                  <span style={{ fontWeight: 700, color: hh.renk }}>{hh.yon} {sayi(m.qty)} {m.unit}</span>
+                  {isAdmin && (
+                    <button onClick={async () => {
+                      if (!window.confirm(`Bu hareket geri alınacak:\n${hh.label} · ${m.item_name} · ${sayi(m.qty)} ${m.unit}\n\nStok bakiyesi düzelir. Devam edilsin mi?`)) return;
+                      await deactivateRow("stock_moves", m.id, user.name); reload();
+                    }} title="Hareketi geri al" style={{ ...S.btn, padding: "3px 9px", fontSize: 11, background: T.redSoft, color: T.red, minHeight: 0 }}>Geri al</button>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: T.sub, marginTop: 3 }}>
+                  {m.from_loc && <>{m.from_loc === DEPO ? "Depo" : m.from_loc}</>}
+                  {m.from_loc && m.to_loc && " → "}
+                  {m.to_loc && <>{m.to_loc === DEPO ? "Depo" : m.to_loc}</>}
+                  {m.doc_no && ` · ${m.doc_no}`}
+                  {m.note && ` · ${m.note}`}
+                  <span style={{ color: T.faint }}> · {m.staff_name} · {trDate(m.created_at)} {trTime(m.created_at)}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 3) BÖLGE STOKLARI (matris) ── */
+function BolgeStok({ items, moves, zones, mobil }) {
+  const [excelBusy, setExcelBusy] = useState(false);
+  /* Sadece hareket görmüş malzemeler gösterilsin */
+  const aktifItems = items.filter(i => moves.some(m => m.item_id === i.id));
+
+  const excelAktar = async () => {
+    setExcelBusy(true);
+    await stilliExcelIndir([{
+      ad: "Bölge Stokları", baslik: "Bölge Bazlı Stok Dağılımı",
+      basliklar: ["Malzeme", "Birim", "Depo", ...zones.map(z => z.id), "Toplam"],
+      sayiSutunlari: [2, ...zones.map((_, i) => i + 3), zones.length + 3],
+      satirlar: aktifItems.map(i => [
+        i.name, i.unit, bakiye(moves, i.id, DEPO),
+        ...zones.map(z => bakiye(moves, i.id, z.id)),
+        toplamStok(moves, i.id),
+      ]),
+      altBilgi: zones.map(z => `${z.id} = ${z.name}`).join(" · "),
+    }], "COP31_Bolge_Stoklari");
+    setExcelBusy(false);
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={S.h2}>Bölge stokları</div>
+          <div style={{ fontSize: 13, color: T.sub }}>Hangi bölgede ne kadar malzeme var</div>
+        </div>
+        <button onClick={excelAktar} disabled={excelBusy}
+          style={{ ...S.btn, padding: "8px 13px", fontSize: 12.5, background: T.greenSoft, color: T.green, opacity: excelBusy ? 0.5 : 1 }}>
+          {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
+        </button>
+      </div>
+
+      {aktifItems.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: T.faint, fontSize: 13.5 }}>
+          Henüz stok hareketi yok. "Hareket girişi" sekmesinden mal kabul ve sevk yapın.
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 200 + zones.length * 70 }}>
+            <thead>
+              <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", color: T.sub, fontSize: 11.5, fontWeight: 600, position: "sticky", left: 0, background: "#fafbfa" }}>Malzeme</th>
+                <th style={{ padding: "10px 8px", textAlign: "center", color: T.green, fontSize: 11.5, fontWeight: 700 }}>DEPO</th>
+                {zones.map(z => (
+                  <th key={z.id} title={z.name} style={{ padding: "10px 8px", textAlign: "center", color: T.sub, fontSize: 11.5, fontWeight: 600 }}>{z.id}</th>
+                ))}
+                <th style={{ padding: "10px 8px", textAlign: "center", color: T.ink, fontSize: 11.5, fontWeight: 700 }}>Toplam</th>
+              </tr>
+            </thead>
+            <tbody>
+              {aktifItems.map(i => {
+                const depo = bakiye(moves, i.id, DEPO);
+                const kritik = Number(i.min_level) > 0 && depo <= Number(i.min_level);
+                return (
+                  <tr key={i.id} style={{ borderBottom: `1px solid ${T.line}` }}>
+                    <td style={{ padding: "10px 12px", fontWeight: 600, color: T.ink, position: "sticky", left: 0, background: "#fff" }}>
+                      {i.name}
+                      <span style={{ fontSize: 11, color: T.faint, fontWeight: 400 }}> ({i.unit})</span>
+                    </td>
+                    <td style={{ padding: "10px 8px", textAlign: "center", fontWeight: 700, color: kritik ? T.red : T.green, background: kritik ? T.redSoft : T.greenSoft }}>
+                      {sayi(depo)}
+                    </td>
+                    {zones.map(z => {
+                      const b = bakiye(moves, i.id, z.id);
+                      return (
+                        <td key={z.id} style={{ padding: "10px 8px", textAlign: "center", color: b > 0 ? T.ink : T.faint, fontWeight: b > 0 ? 600 : 400 }}>
+                          {b > 0 ? sayi(b) : "—"}
+                        </td>
+                      );
+                    })}
+                    <td style={{ padding: "10px 8px", textAlign: "center", fontWeight: 700, color: T.ink, background: "#fafbfa" }}>
+                      {sayi(toplamStok(moves, i.id))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 4) TÜKETİM ANALİZİ ── */
+function TuketimAnaliz({ items, moves, zones }) {
+  const [gun, setGun] = useState(30);
+  const [excelBusy, setExcelBusy] = useState(false);
+
+  const sinir = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - gun); d.setHours(0, 0, 0, 0); return d; }, [gun]);
+  const tuketim = moves.filter(m => m.move_type === "tuketim" && new Date(m.created_at) >= sinir);
+  const fire = moves.filter(m => m.move_type === "fire" && new Date(m.created_at) >= sinir);
+
+  /* Günlük trend */
+  const gunluk = useMemo(() => {
+    const liste = [];
+    for (let i = gun - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
+      const etiket = d.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" });
+      const gunHareket = tuketim.filter(m => new Date(m.created_at).toDateString() === d.toDateString());
+      liste.push({ gun: etiket, adet: gunHareket.length, miktar: gunHareket.reduce((a, m) => a + Number(m.qty), 0) });
+    }
+    return gun > 31 ? liste.filter((_, i) => i % 2 === 0) : liste;
+  }, [tuketim, gun]);
+
+  /* Malzeme bazlı tüketim */
+  const malzemeBazli = items.map(i => {
+    const t = tuketim.filter(m => m.item_id === i.id);
+    const f = fire.filter(m => m.item_id === i.id);
+    const toplam = t.reduce((a, m) => a + Number(m.qty), 0);
+    return {
+      name: i.name, unit: i.unit, toplam,
+      gunlukOrt: gun ? toplam / gun : 0,
+      fireToplam: f.reduce((a, m) => a + Number(m.qty), 0),
+      mevcut: bakiye(moves, i.id, DEPO),
+      /* Kalan gün tahmini */
+      kalanGun: (toplam / gun) > 0 ? Math.floor(bakiye(moves, i.id, DEPO) / (toplam / gun)) : null,
+    };
+  }).filter(x => x.toplam > 0).sort((a, b) => b.toplam - a.toplam);
+
+  /* Bölge bazlı tüketim */
+  const bolgeBazli = zones.map(z => {
+    const t = tuketim.filter(m => m.from_loc === z.id);
+    return { name: z.id, tam: z.name, adet: t.length, miktar: t.reduce((a, m) => a + Number(m.qty), 0) };
+  }).filter(x => x.miktar > 0).sort((a, b) => b.miktar - a.miktar);
+
+  const excelAktar = async () => {
+    setExcelBusy(true);
+    await stilliExcelIndir([
+      {
+        ad: "Malzeme Tüketimi", baslik: `Malzeme Tüketim Analizi · Son ${gun} gün`,
+        basliklar: ["Malzeme", "Birim", "Toplam tüketim", "Günlük ortalama", "Fire", "Depo mevcut", "Tahmini yeterlilik (gün)"],
+        sayiSutunlari: [2, 3, 4, 5, 6],
+        vurguSatir: (r) => r[6] !== "—" && Number(r[6]) < 7,
+        satirlar: malzemeBazli.map(m => [m.name, m.unit, Number(m.toplam.toFixed(2)),
+          Number(m.gunlukOrt.toFixed(2)), Number(m.fireToplam.toFixed(2)), m.mevcut,
+          m.kalanGun !== null ? m.kalanGun : "—"]),
+      },
+      {
+        ad: "Bölge Tüketimi", baslik: `Bölge Bazlı Tüketim · Son ${gun} gün`,
+        basliklar: ["Bölge", "Bölge adı", "Hareket sayısı", "Toplam miktar"],
+        sayiSutunlari: [2, 3],
+        satirlar: bolgeBazli.map(b => [b.name, b.tam, b.adet, Number(b.miktar.toFixed(2))]),
+      },
+      {
+        ad: "Tüketim Dökümü", baslik: "Tüketim Hareketleri",
+        basliklar: ["Tarih", "Saat", "Malzeme", "Bölge", "Miktar", "Birim", "Kaydeden", "Not"],
+        sayiSutunlari: [4],
+        satirlar: tuketim.slice().reverse().map(m => [trDate(m.created_at), trTime(m.created_at),
+          m.item_name, m.from_loc || "", Number(m.qty), m.unit || "", m.staff_name || "", m.note || ""]),
+      },
+    ], "COP31_Tuketim_Analizi");
+    setExcelBusy(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 12.5, color: T.sub, fontWeight: 600 }}>Dönem:</span>
+        {[7, 30, 90].map(g => (
+          <button key={g} onClick={() => setGun(g)} style={{
+            ...S.btn, padding: "8px 14px", fontSize: 12.5,
+            background: gun === g ? T.green : "#fbfcfb", color: gun === g ? "#fff" : T.sub,
+            border: `1.5px solid ${gun === g ? T.green : T.line}`,
+          }}>{g} gün</button>
+        ))}
+        <button onClick={excelAktar} disabled={excelBusy}
+          style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, background: T.greenSoft, color: T.green, marginLeft: "auto", opacity: excelBusy ? 0.5 : 1 }}>
+          {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
+        </button>
+      </div>
+
+      {tuketim.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", padding: 50, color: T.faint }}>
+          Bu dönemde tüketim kaydı yok.
+        </div>
+      ) : (
+        <>
+          <div style={S.card}>
+            <div style={S.h2}>Günlük tüketim trendi</div>
+            <ResponsiveContainer width="100%" height={240}>
+              <AreaChart data={gunluk}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                <XAxis dataKey="gun" tick={{ fontSize: 10.5, fill: T.sub }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 11, fill: T.sub }} />
+                <Tooltip contentStyle={S.tooltip} />
+                <Area type="monotone" dataKey="miktar" stroke={T.green} fill={T.green} fillOpacity={0.15} strokeWidth={2} name="Tüketim" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+            <div style={S.card}>
+              <div style={S.h2}>En çok tüketilen malzemeler</div>
+              <ResponsiveContainer width="100%" height={Math.max(200, Math.min(malzemeBazli.length, 8) * 34)}>
+                <BarChart data={malzemeBazli.slice(0, 8)} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: T.sub }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: T.ink }} width={140} />
+                  <Tooltip contentStyle={S.tooltip} />
+                  <Bar dataKey="toplam" fill={T.blue} radius={[0, 5, 5, 0]} name="Tüketim" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {bolgeBazli.length > 0 && (
+              <div style={S.card}>
+                <div style={S.h2}>Bölge bazlı tüketim</div>
+                <ResponsiveContainer width="100%" height={Math.max(200, Math.min(bolgeBazli.length, 8) * 34)}>
+                  <BarChart data={bolgeBazli.slice(0, 8)}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: T.sub }} />
+                    <YAxis tick={{ fontSize: 11, fill: T.sub }} />
+                    <Tooltip contentStyle={S.tooltip} formatter={(v, n, p) => [sayi(v), p?.payload?.tam || "Tüketim"]} />
+                    <Bar dataKey="miktar" fill={T.amber} radius={[5, 5, 0, 0]} name="Miktar" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          <div style={S.card}>
+            <div style={S.h2}>Tüketim ve yeterlilik</div>
+            <div style={S.sub}>Mevcut stok, bu tüketim hızıyla kaç gün yeter</div>
+            <div style={{ overflowX: "auto", marginTop: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 620 }}>
+                <thead>
+                  <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
+                    {["Malzeme", "Toplam tüketim", "Günlük ort.", "Fire", "Depo mevcut", "Yeterlilik"].map((h, i) => (
+                      <th key={h} style={{ padding: "10px 10px", textAlign: i === 0 ? "left" : "center", color: T.sub, fontSize: 11.5, fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {malzemeBazli.map(m => {
+                    const az = m.kalanGun !== null && m.kalanGun < 7;
+                    return (
+                      <tr key={m.name} style={{ borderBottom: `1px solid ${T.line}`, background: az ? T.redSoft : "transparent" }}>
+                        <td style={{ padding: "10px", fontWeight: 600, color: T.ink }}>{m.name}</td>
+                        <td style={{ padding: "10px", textAlign: "center" }}>{sayi(m.toplam)} <span style={{ fontSize: 11, color: T.faint }}>{m.unit}</span></td>
+                        <td style={{ padding: "10px", textAlign: "center", color: T.sub }}>{sayi(m.gunlukOrt.toFixed(1))}</td>
+                        <td style={{ padding: "10px", textAlign: "center", color: m.fireToplam > 0 ? T.red : T.faint }}>{m.fireToplam > 0 ? sayi(m.fireToplam) : "—"}</td>
+                        <td style={{ padding: "10px", textAlign: "center", fontWeight: 600 }}>{sayi(m.mevcut)}</td>
+                        <td style={{ padding: "10px", textAlign: "center" }}>
+                          {m.kalanGun !== null ? (
+                            <span style={S.tag(az ? "#fff" : T.greenSoft, az ? T.red : T.green)}>
+                              ~{m.kalanGun} gün
+                            </span>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── 5) MALZEME TANIMLARI ── */
+function MalzemeTanim({ user, items, reload }) {
+  const BIRIMLER = ["adet", "kg", "lt", "koli", "paket", "kutu", "rulo", "metre"];
+  const [f, setF] = useState({ name: "", code: "", category: "", unit: "adet", min_level: "", unit_cost: "", supplier: "" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState(false);
+  const [duzId, setDuzId] = useState(null);
+  const [duz, setDuz] = useState({});
+
+  const ekle = async () => {
+    if (!f.name.trim() || busy) return;
+    setBusy(true);
+    await insertRow("stock_items", {
+      name: f.name.trim(), code: f.code || null, category: f.category || null,
+      unit: f.unit, min_level: Number(f.min_level) || 0,
+      unit_cost: f.unit_cost ? Number(f.unit_cost) : null, supplier: f.supplier || null,
+    }, user.name);
+    setF({ name: "", code: "", category: "", unit: "adet", min_level: "", unit_cost: "", supplier: "" });
+    setBusy(false); reload();
+  };
+
+  const kaydet = async (i) => {
+    if (!duz.name?.trim()) return;
+    await updateRow("stock_items", i.id, {
+      name: duz.name.trim(), code: duz.code || null, category: duz.category || null,
+      unit: duz.unit, min_level: Number(duz.min_level) || 0,
+      unit_cost: duz.unit_cost ? Number(duz.unit_cost) : null, supplier: duz.supplier || null,
+    }, user.name);
+    setDuzId(null); reload();
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
+      <div style={S.card}>
+        <div style={S.h2}>Yeni malzeme</div>
+        <div style={S.sub}>Kritik seviye belirlerseniz stok azalınca uyarı alırsınız.</div>
+        <label style={S.label}>Malzeme adı <span style={{ color: T.red }}>*</span></label>
+        <input style={S.input} placeholder="Örn: Çöp poşeti 80x110" value={f.name} onChange={e => set("name", e.target.value)} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label style={S.label}>Stok kodu</label>
+            <input style={S.input} placeholder="Örn: SRF-001" value={f.code} onChange={e => set("code", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Kategori</label>
+            <input style={S.input} placeholder="Sarf / Temizlik…" value={f.category} onChange={e => set("category", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Birim</label>
+            <select style={S.input} value={f.unit} onChange={e => set("unit", e.target.value)}>
+              {BIRIMLER.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Kritik seviye</label>
+            <input style={S.input} type="number" min="0" placeholder="0" value={f.min_level} onChange={e => set("min_level", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Birim maliyet (₺)</label>
+            <input style={S.input} type="number" min="0" step="0.01" placeholder="0,00" value={f.unit_cost} onChange={e => set("unit_cost", e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Tedarikçi</label>
+            <input style={S.input} placeholder="İsteğe bağlı" value={f.supplier} onChange={e => set("supplier", e.target.value)} />
+          </div>
+        </div>
+        <button onClick={ekle} disabled={!f.name.trim() || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!f.name.trim() || busy) ? 0.4 : 1 }}>
+          Malzeme ekle
+        </button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Malzemeler ({items.length})</div>
+        <div style={{ marginTop: 10 }}>
+          {items.length === 0 ? (
+            <div style={{ padding: "20px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Malzeme yok.</div>
+          ) : items.map(i => (
+            <div key={i.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+              {duzId === i.id ? (
+                <div>
+                  <input style={{ ...S.input, marginBottom: 6, padding: "7px 10px" }} value={duz.name}
+                    onChange={e => setDuz(p => ({ ...p, name: e.target.value }))} autoFocus />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                    <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} value={duz.category || ""}
+                      onChange={e => setDuz(p => ({ ...p, category: e.target.value }))} placeholder="Kategori" />
+                    <select style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} value={duz.unit}
+                      onChange={e => setDuz(p => ({ ...p, unit: e.target.value }))}>
+                      {BIRIMLER.map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                    <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} type="number" value={duz.min_level ?? ""}
+                      onChange={e => setDuz(p => ({ ...p, min_level: e.target.value }))} placeholder="Kritik seviye" />
+                    <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} type="number" step="0.01" value={duz.unit_cost ?? ""}
+                      onChange={e => setDuz(p => ({ ...p, unit_cost: e.target.value }))} placeholder="Birim maliyet" />
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => kaydet(i)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+                    <button onClick={() => setDuzId(null)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, color: T.ink }}>{i.name}</div>
+                    <div style={{ fontSize: 11.5, color: T.faint }}>
+                      {i.code ? `${i.code} · ` : ""}{i.category || "kategorisiz"} · {i.unit}
+                      {Number(i.min_level) > 0 && ` · min ${sayi(i.min_level)}`}
+                      {i.unit_cost && ` · ${sayi(i.unit_cost)} ₺`}
+                    </div>
+                  </div>
+                  <button onClick={() => { setDuzId(i.id); setDuz({ ...i }); }}
+                    style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                  <button onClick={async () => {
+                    if (!window.confirm(`"${i.name}" malzemesi listeden kaldırılacak.\n\nGeçmiş hareketleri korunur. Devam edilsin mi?`)) return;
+                    await deactivateRow("stock_items", i.id, user.name); reload();
+                  }} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
