@@ -49,27 +49,34 @@ const FALLBACK_SHIFTS = ["Tam gün", "Sabah (08-17)", "Akşam (17-01)", "Gece (0
    ROLE_TABS: rol seçilince önerilen varsayılan ekranlar.
    Kişiye özel seçim yapılırsa (staff.permissions) o geçerli olur. */
 const ALL_TABS = [
-  { id: "dashboard", label: "Genel durum", desc: "Özet, grafikler, uyarılar" },
-  { id: "istakip",   label: "İş Takibi",   desc: "Bana atanan görevler" },
-  { id: "isanaliz",  label: "İş Analizi",  desc: "Görev istatistikleri ve grafikler" },
-  { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
-  { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
-  { id: "gorev",     label: "Görev atama", desc: "Bölge sorumlulukları, SLA" },
-  { id: "olay",      label: "Arıza & Talep", desc: "Arıza bildirimi, takip, performans" },
-  { id: "stok",      label: "Stok & Malzeme", desc: "Stok durumu, sevk, tüketim analizi" },
-  { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
-  { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
-  { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
-  { id: "qr",        label: "QR kodlar",   desc: "QR üret ve yazdır", admin: true },
-  { id: "hedef",     label: "Hedefler",    desc: "ISO 20121 hedefleri", admin: true },
+  /* grup: gruplandırma başlığı · ikon: sade sembol */
+  { id: "dashboard", label: "Genel durum",  grup: "ozet",     ikon: "◎", desc: "Özet, grafikler, uyarılar" },
+  { id: "saha",      label: "Saha kaydı",   grup: "operasyon", ikon: "⬚", desc: "QR ile giriş/çıkış" },
+  { id: "atik",      label: "Atık girişi",  grup: "operasyon", ikon: "⬧", desc: "Tür, kg, hedef, fotoğraf" },
+  { id: "olay",      label: "Arıza & Talep",grup: "operasyon", ikon: "⚠", desc: "Arıza bildirimi, takip, performans" },
+  { id: "stok",      label: "Stok & Malzeme",grup: "operasyon",ikon: "▤", desc: "Stok durumu, sevk, tüketim analizi" },
+  { id: "istakip",   label: "İş Takibi",    grup: "isler",    ikon: "☰", desc: "Görevler, pano ve analiz" },
+  { id: "gorev",     label: "Görev atama",  grup: "isler",    ikon: "◱", desc: "Bölge sorumlulukları, SLA" },
+  { id: "rapor",     label: "Rapor & Hedef",grup: "rapor",    ikon: "▦", desc: "Özet rapor, hedefler, Excel" },
+  { id: "personel",  label: "Personel",     grup: "yonetim",  ikon: "◍", desc: "Ekip, görev, departman, vardiya", admin: true },
+  { id: "bolge",     label: "Bölge & QR",   grup: "yonetim",  ikon: "▣", desc: "Bölge tanımları ve QR kodları", admin: true },
+];
+
+/* Menü grupları — sırayla gösterilir */
+const TAB_GRUPLARI = [
+  { id: "ozet",      baslik: null },
+  { id: "operasyon", baslik: "Operasyon" },
+  { id: "isler",     baslik: "İş yönetimi" },
+  { id: "rapor",     baslik: "Raporlama" },
+  { id: "yonetim",   baslik: "Yönetim" },
 ];
 
 const ROLE_TABS = {
   "Temizlik":       ["saha", "istakip", "stok"],
   "Atık Toplama":   ["atik", "istakip", "stok"],
   "Araç Sürücü":    ["atik", "istakip"],
-  "Denetim":        ["dashboard", "istakip", "isanaliz", "olay", "gorev", "rapor"],
-  "Saha Sorumlusu": ["dashboard", "istakip", "isanaliz", "saha", "atik", "gorev", "olay", "stok", "rapor"],
+  "Denetim":        ["dashboard", "istakip", "olay", "gorev", "rapor"],
+  "Saha Sorumlusu": ["dashboard", "istakip", "saha", "atik", "gorev", "olay", "stok", "rapor"],
 };
 
 /* Bir kullanıcının görebileceği ekranları hesaplar. */
@@ -401,23 +408,50 @@ function App({ user, logout }) {
           </div>
         </div>
 
-        <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: 10, overflowY: "auto", flex: 1 }}>
-          {NAV.map(n => {
-            const badge = n.id === "istakip"
-              ? tasks.filter(t => t.assignee_id === user.id && !t.seen && t.status !== "tamamlandi").length
-              : 0;
+        <nav style={{ display: "flex", flexDirection: "column", padding: "8px 10px", overflowY: "auto", flex: 1 }}>
+          {TAB_GRUPLARI.map(grup => {
+            const items = NAV.filter(n => n.grup === grup.id);
+            if (items.length === 0) return null;
             return (
-              <button key={n.id} onClick={() => { setTab(n.id); setMenuAcik(false); }} style={{
-                ...S.btn, padding: mobil ? "13px 14px" : "10px 14px", fontSize: 14, textAlign: "left",
-                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-                background: tab === n.id ? T.greenSoft : "transparent",
-                color: tab === n.id ? T.green : T.sub, fontWeight: tab === n.id ? 700 : 500,
-              }}>
-                <span>{n.label}</span>
-                {badge > 0 && (
-                  <span style={{ background: T.red, color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>{badge}</span>
+              <div key={grup.id} style={{ marginBottom: 6 }}>
+                {grup.baslik && (
+                  <div style={{
+                    fontSize: 10, fontWeight: 700, color: T.faint, textTransform: "uppercase",
+                    letterSpacing: 0.8, padding: "10px 12px 5px",
+                  }}>{grup.baslik}</div>
                 )}
-              </button>
+                {items.map(n => {
+                  const badge = n.id === "istakip"
+                    ? tasks.filter(t => t.assignee_id === user.id && !t.seen && t.status !== "tamamlandi").length
+                    : n.id === "olay"
+                      ? incidents.filter(t => !["kapandi", "iptal"].includes(t.status)
+                          && (user.is_admin || t.assigned_dept === user.department || t.assignee_id === user.id)).length
+                      : 0;
+                  const aktif = tab === n.id;
+                  return (
+                    <button key={n.id} onClick={() => { setTab(n.id); setMenuAcik(false); }} title={n.desc} style={{
+                      ...S.btn, padding: mobil ? "12px 12px" : "10px 12px", fontSize: 13.5, textAlign: "left",
+                      display: "flex", alignItems: "center", gap: 10, width: "100%",
+                      background: aktif ? T.greenSoft : "transparent",
+                      color: aktif ? T.green : T.sub,
+                      fontWeight: aktif ? 700 : 500,
+                      borderLeft: `3px solid ${aktif ? T.green : "transparent"}`,
+                      borderRadius: aktif ? "0 8px 8px 0" : 8,
+                      marginBottom: 1,
+                    }}>
+                      <span style={{ fontSize: 14, opacity: aktif ? 1 : 0.5, width: 16, textAlign: "center", flexShrink: 0 }}>{n.ikon}</span>
+                      <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n.label}</span>
+                      {badge > 0 && (
+                        <span style={{
+                          background: n.id === "olay" ? T.red : T.green, color: "#fff", fontSize: 10.5, fontWeight: 700,
+                          borderRadius: 999, minWidth: 18, height: 18, display: "flex",
+                          alignItems: "center", justifyContent: "center", padding: "0 5px", flexShrink: 0,
+                        }}>{badge}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             );
           })}
         </nav>
@@ -468,7 +502,6 @@ function App({ user, logout }) {
         {allowed.includes(tab) && (<>
           {tab === "dashboard" && <Dashboard {...ctx} />}
           {tab === "istakip" && <TaskManager {...ctx} />}
-          {tab === "isanaliz" && <TaskAnalytics {...ctx} />}
           {tab === "saha" && <FieldEntry {...ctx} />}
           {tab === "atik" && <WasteEntry {...ctx} />}
           {tab === "gorev" && <Assignments {...ctx} />}
@@ -477,8 +510,6 @@ function App({ user, logout }) {
           {tab === "rapor" && <Report {...ctx} />}
           {tab === "personel" && user.is_admin && <Personnel {...ctx} />}
           {tab === "bolge" && user.is_admin && <ZonesManager {...ctx} />}
-          {tab === "qr" && user.is_admin && <QRManager {...ctx} />}
-          {tab === "hedef" && user.is_admin && <Targets {...ctx} />}
         </>)}
       </main>
     </div>
@@ -2558,7 +2589,26 @@ function QRManager({ zones = [] }) {
 }
 
 /* ═══════════ BÖLGE YÖNETİMİ (yalnız yönetici) ═══════════ */
-function ZonesManager({ user, zones = [], cleanLogs, wasteLogs, reload }) {
+function ZonesManager(props) {
+  const [anaSekme, setAnaSekme] = useState("bolgeler");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {[{ id: "bolgeler", label: "Bölgeler" }, { id: "qr", label: "QR kodlar" }].map(v => (
+          <button key={v.id} onClick={() => setAnaSekme(v.id)} style={{
+            ...S.btn, padding: "9px 16px", fontSize: 13.5,
+            background: anaSekme === v.id ? T.green : "#fbfcfb",
+            color: anaSekme === v.id ? "#fff" : T.sub,
+            border: `1.5px solid ${anaSekme === v.id ? T.green : T.line}`,
+          }}>{v.label}</button>
+        ))}
+      </div>
+      {anaSekme === "bolgeler" ? <BolgeListesi {...props} /> : <QRManager {...props} />}
+    </div>
+  );
+}
+
+function BolgeListesi({ user, zones = [], cleanLogs, wasteLogs, reload }) {
   const [name, setName] = useState("");
   const [area, setArea] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2900,7 +2950,27 @@ const statOf = (id) => STATUSES.find(s => s.id === id) || STATUSES[0];
 const priOf = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
 const parseCl = (s) => { try { return JSON.parse(s || "[]"); } catch { return []; } };
 
-function TaskManager({ user, staff, tasks, roles = [], depts = [], reload }) {
+function TaskManager(props) {
+  const { user } = props;
+  const [anaSekme, setAnaSekme] = useState("gorevler");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {[{ id: "gorevler", label: "Görevler" }, { id: "analiz", label: "Analiz & performans" }].map(v => (
+          <button key={v.id} onClick={() => setAnaSekme(v.id)} style={{
+            ...S.btn, padding: "9px 16px", fontSize: 13.5,
+            background: anaSekme === v.id ? T.green : "#fbfcfb",
+            color: anaSekme === v.id ? "#fff" : T.sub,
+            border: `1.5px solid ${anaSekme === v.id ? T.green : T.line}`,
+          }}>{v.label}</button>
+        ))}
+      </div>
+      {anaSekme === "gorevler" ? <GorevListesi {...props} /> : <TaskAnalytics {...props} />}
+    </div>
+  );
+}
+
+function GorevListesi({ user, staff, tasks, roles = [], depts = [], reload }) {
   const isAdmin = user.is_admin;
   const mobil = useIsMobile();
   const [openId, setOpenId] = useState(null);
@@ -4015,7 +4085,31 @@ function TaskAnalytics({ user, staff, tasks = [], depts = [], roles = [] }) {
 }
 
 /* ═══════════ RAPOR ═══════════ */
-function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks = [], depts = [], roles = [] }) {
+function Report(props) {
+  const { user } = props;
+  const [anaSekme, setAnaSekme] = useState("rapor");
+  const sekmeler = [{ id: "rapor", label: "Özet rapor" },
+    ...(user.is_admin ? [{ id: "hedef", label: "Hedefler & yedek" }] : [])];
+  return (
+    <div>
+      {sekmeler.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          {sekmeler.map(v => (
+            <button key={v.id} onClick={() => setAnaSekme(v.id)} style={{
+              ...S.btn, padding: "9px 16px", fontSize: 13.5,
+              background: anaSekme === v.id ? T.green : "#fbfcfb",
+              color: anaSekme === v.id ? "#fff" : T.sub,
+              border: `1.5px solid ${anaSekme === v.id ? T.green : T.line}`,
+            }}>{v.label}</button>
+          ))}
+        </div>
+      )}
+      {anaSekme === "rapor" ? <OzetRapor {...props} /> : <Targets {...props} />}
+    </div>
+  );
+}
+
+function OzetRapor({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks = [], depts = [], roles = [] }) {
   const [dept, setDept] = useState("hepsi");
   const [role, setRole] = useState("hepsi");
   const filtering = dept !== "hepsi" || role !== "hepsi";
@@ -4326,6 +4420,7 @@ function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], relo
     { id: "hareket", label: "Hareket girişi" },
     { id: "bolge",   label: "Bölge stokları" },
     { id: "analiz",  label: "Tüketim analizi" },
+    { id: "siparis", label: "Sipariş önerisi" },
     ...(isAdmin ? [{ id: "tanim", label: "Malzeme tanımları" }] : []),
   ];
 
@@ -4385,6 +4480,9 @@ function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], relo
       )}
       {gorunum === "analiz" && (
         <TuketimAnaliz items={stockItems} moves={aktifMoves} zones={zones} />
+      )}
+      {gorunum === "siparis" && (
+        <SiparisOnerisi items={stockItems} moves={aktifMoves} />
       )}
       {gorunum === "tanim" && isAdmin && (
         <MalzemeTanim user={user} items={stockItems} reload={reload} />
@@ -4489,6 +4587,7 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState(false);
   const [mesaj, setMesaj] = useState("");
+  const [sepet, setSepet] = useState([]);   // toplu işlem satırları
 
   const h = hrk(tip);
   const secili = items.find(i => i.id === f.item_id);
@@ -4513,18 +4612,39 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
   const gecerli = f.item_id && Number(f.qty) > 0
     && (!kaynakGerek || f.from_loc) && (!hedefGerek || f.to_loc) && !yetersiz;
 
+  /* Satırı sepete ekle (toplu işlem için) */
+  const sepeteEkle = () => {
+    if (!gecerli) return;
+    setSepet(p => [...p, {
+      key: Math.random().toString(36).slice(2),
+      item_id: f.item_id, item_name: secili?.name || "", unit: secili?.unit || "",
+      qty: Number(f.qty), note: f.note || "",
+    }]);
+    setF(p => ({ ...p, item_id: "", qty: "", note: "" }));
+  };
+
+  const sepettenCikar = (key) => setSepet(p => p.filter(x => x.key !== key));
+
+  /* Tek satır veya sepetteki tüm satırları kaydet */
   const kaydet = async () => {
-    if (!gecerli || busy) return;
+    const satirlar = sepet.length > 0
+      ? sepet
+      : (gecerli ? [{ item_id: f.item_id, item_name: secili?.name || "", unit: secili?.unit || "", qty: Number(f.qty), note: f.note || "" }] : []);
+    if (satirlar.length === 0 || busy) return;
     setBusy(true);
-    await insertRow("stock_moves", {
-      item_id: f.item_id, item_name: secili?.name || "",
-      move_type: tip, qty: Number(f.qty), unit: secili?.unit || "",
-      from_loc: kaynakGerek ? f.from_loc : null,
-      to_loc: hedefGerek ? f.to_loc : null,
-      note: f.note || null, doc_no: f.doc_no || null, staff_name: user.name,
-    }, user.name);
+    for (const r of satirlar) {
+      await insertRow("stock_moves", {
+        item_id: r.item_id, item_name: r.item_name,
+        move_type: tip, qty: r.qty, unit: r.unit,
+        from_loc: kaynakGerek ? f.from_loc : null,
+        to_loc: hedefGerek ? f.to_loc : null,
+        note: r.note || null, doc_no: f.doc_no || null, staff_name: user.name,
+      }, user.name);
+    }
     setF(p => ({ ...p, item_id: "", qty: "", note: "", doc_no: "" }));
-    setBusy(false); setMesaj("✓ Hareket kaydedildi");
+    setSepet([]);
+    setBusy(false);
+    setMesaj(`✓ ${satirlar.length} kalem kaydedildi`);
     setTimeout(() => setMesaj(""), 2500);
     reload();
   };
@@ -4594,10 +4714,33 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
         <label style={S.label}>Not</label>
         <input style={S.input} placeholder="İsteğe bağlı açıklama" value={f.note} onChange={e => set("note", e.target.value)} />
 
-        <button onClick={kaydet} disabled={!gecerli || busy}
-          style={{ ...S.btn, background: h.renk, color: "#fff", width: "100%", opacity: (!gecerli || busy) ? 0.4 : 1 }}>
-          {busy ? "Kaydediliyor…" : `${h.label} kaydet`}
-        </button>
+        {/* Sepet (toplu işlem) */}
+        {sepet.length > 0 && (
+          <div style={{ background: "#fafbfa", borderRadius: 10, border: `1px solid ${T.line}`, padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.4 }}>
+              İşlem listesi ({sepet.length} kalem)
+            </div>
+            {sepet.map(r => (
+              <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13 }}>
+                <span style={{ flex: 1, color: T.ink, fontWeight: 500 }}>{r.item_name}</span>
+                <span style={{ fontWeight: 700, color: h.renk }}>{sayi(r.qty)} {r.unit}</span>
+                <button onClick={() => sepettenCikar(r.key)} style={{ ...S.btn, padding: "2px 8px", fontSize: 12, background: T.redSoft, color: T.red, minHeight: 0 }}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={sepeteEkle} disabled={!gecerli}
+            style={{ ...S.btn, ...S.btnGhost, flex: 1, opacity: !gecerli ? 0.4 : 1 }}
+            title="Aynı sevkiyata birden çok kalem eklemek için">
+            + Listeye ekle
+          </button>
+          <button onClick={kaydet} disabled={(sepet.length === 0 && !gecerli) || busy}
+            style={{ ...S.btn, background: h.renk, color: "#fff", flex: 1.4, opacity: ((sepet.length === 0 && !gecerli) || busy) ? 0.4 : 1 }}>
+            {busy ? "Kaydediliyor…" : sepet.length > 0 ? `${sepet.length} kalemi kaydet` : "Kaydet"}
+          </button>
+        </div>
         {mesaj && (
           <div style={{ marginTop: 12, padding: 11, borderRadius: 9, background: T.greenSoft, color: T.green, fontSize: 13.5, textAlign: "center", fontWeight: 600 }}>
             {mesaj}
@@ -5028,6 +5171,172 @@ function MalzemeTanim({ user, items, reload }) {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── SİPARİŞ ÖNERİSİ ──
+   Kritik seviyeye düşen ve tüketim hızına göre tükenmek üzere olan
+   malzemeleri listeler, önerilen sipariş miktarını hesaplar. */
+function SiparisOnerisi({ items, moves }) {
+  const [ufuk, setUfuk] = useState(30);   // kaç günlük ihtiyaç
+  const [excelBusy, setExcelBusy] = useState(false);
+  const [secili, setSecili] = useState({});   // manuel miktar düzeltmeleri
+
+  /* Son 30 günün tüketim hızı */
+  const analizGun = 30;
+  const sinir = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - analizGun); return d; }, []);
+
+  const oneriler = items.map(i => {
+    const tuketim = moves.filter(m => m.item_id === i.id && ["tuketim", "fire"].includes(m.move_type)
+      && new Date(m.created_at) >= sinir);
+    const toplamTuketim = tuketim.reduce((a, m) => a + Number(m.qty), 0);
+    const gunlukHiz = toplamTuketim / analizGun;
+    const depo = bakiye(moves, i.id, DEPO);
+    const toplam = toplamStok(moves, i.id);
+    const kalanGun = gunlukHiz > 0 ? Math.floor(depo / gunlukHiz) : null;
+    const ihtiyac = gunlukHiz * ufuk;                    // ufuk süresince gereken
+    const minSeviye = Number(i.min_level) || 0;
+    /* Önerilen: ufuk boyunca ihtiyaç + emniyet stoğu − mevcut */
+    const ham = Math.ceil(ihtiyac + minSeviye - depo);
+    const onerilen = Math.max(0, ham);
+    const aciliyet = depo <= minSeviye ? "kritik"
+      : (kalanGun !== null && kalanGun < ufuk) ? "yakin" : "normal";
+    return { ...i, depo, toplam, gunlukHiz, kalanGun, onerilen, aciliyet,
+      tutar: i.unit_cost ? onerilen * Number(i.unit_cost) : null };
+  }).filter(x => x.onerilen > 0 || x.aciliyet === "kritik")
+    .sort((a, b) => {
+      const w = { kritik: 0, yakin: 1, normal: 2 };
+      return (w[a.aciliyet] - w[b.aciliyet]) || (a.kalanGun ?? 999) - (b.kalanGun ?? 999);
+    });
+
+  const miktar = (i) => secili[i.id] !== undefined ? secili[i.id] : i.onerilen;
+  const toplamTutar = oneriler.reduce((a, i) => a + (i.unit_cost ? miktar(i) * Number(i.unit_cost) : 0), 0);
+
+  /* Toplam stok değeri (tüm malzemeler) */
+  const stokDegeri = items.reduce((a, i) => {
+    const t = toplamStok(moves, i.id);
+    return a + (i.unit_cost ? t * Number(i.unit_cost) : 0);
+  }, 0);
+
+  const excelAktar = async () => {
+    setExcelBusy(true);
+    await stilliExcelIndir([
+      {
+        ad: "Sipariş Listesi", baslik: `Satın Alma Öneri Listesi · ${ufuk} günlük ihtiyaç`,
+        basliklar: ["Malzeme", "Kod", "Birim", "Depo mevcut", "Günlük tüketim", "Yeterlilik (gün)",
+          "Önerilen sipariş", "Birim fiyat", "Tutar", "Aciliyet", "Tedarikçi"],
+        sayiSutunlari: [3, 4, 5, 6, 7, 8],
+        vurguSatir: (r) => r[9] === "KRİTİK",
+        satirlar: oneriler.map(i => [i.name, i.code || "", i.unit, i.depo,
+          Number(i.gunlukHiz.toFixed(2)), i.kalanGun ?? "—", miktar(i),
+          i.unit_cost ? Number(i.unit_cost) : "", i.unit_cost ? Number((miktar(i) * i.unit_cost).toFixed(2)) : "",
+          i.aciliyet === "kritik" ? "KRİTİK" : i.aciliyet === "yakin" ? "Yaklaşıyor" : "Normal",
+          i.supplier || ""]),
+        altBilgi: toplamTutar > 0 ? `Tahmini toplam tutar: ${sayi(toplamTutar.toFixed(2))} ₺` : null,
+      },
+    ], "COP31_Siparis_Onerisi");
+    setExcelBusy(false);
+  };
+
+  const RENK = { kritik: T.red, yakin: T.amber, normal: T.green };
+  const ETIKET = { kritik: "Kritik", yakin: "Yaklaşıyor", normal: "Normal" };
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {[
+          { l: "Sipariş edilecek kalem", v: oneriler.length, c: oneriler.length > 0 ? T.amber : T.green },
+          { l: "Kritik seviyede", v: oneriler.filter(i => i.aciliyet === "kritik").length, c: T.red },
+          { l: "Tahmini sipariş tutarı", v: toplamTutar > 0 ? `${sayi(toplamTutar.toFixed(0))} ₺` : "—", c: T.blue },
+          { l: "Mevcut stok değeri", v: stokDegeri > 0 ? `${sayi(stokDegeri.toFixed(0))} ₺` : "—", c: T.green },
+        ].map(k => (
+          <div key={k.l} style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${k.c}` }}>
+            <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{k.l}</div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 22, fontWeight: 800, color: T.ink }}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <div style={S.h2}>Satın alma önerisi</div>
+            <div style={{ fontSize: 13, color: T.sub }}>Son 30 günün tüketim hızına göre hesaplanır</div>
+          </div>
+          <span style={{ fontSize: 12.5, color: T.sub, fontWeight: 600 }}>Kaç günlük:</span>
+          {[15, 30, 60].map(g => (
+            <button key={g} onClick={() => { setUfuk(g); setSecili({}); }} style={{
+              ...S.btn, padding: "8px 14px", fontSize: 12.5,
+              background: ufuk === g ? T.green : "#fbfcfb", color: ufuk === g ? "#fff" : T.sub,
+              border: `1.5px solid ${ufuk === g ? T.green : T.line}`,
+            }}>{g} gün</button>
+          ))}
+          <button onClick={excelAktar} disabled={excelBusy || oneriler.length === 0}
+            style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, background: T.greenSoft, color: T.green, opacity: (excelBusy || oneriler.length === 0) ? 0.5 : 1 }}>
+            {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
+          </button>
+        </div>
+
+        {oneriler.length === 0 ? (
+          <div style={{ padding: 40, textAlign: "center", color: T.green, fontSize: 14, fontWeight: 600 }}>
+            ✓ Tüm malzemeler yeterli seviyede — sipariş gerekmiyor.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
+              <thead>
+                <tr style={{ background: "#fafbfa", borderBottom: `2px solid ${T.line}` }}>
+                  {["Malzeme", "Depo", "Günlük tük.", "Yeterlilik", "Önerilen sipariş", "Tutar", "Durum"].map((h, i) => (
+                    <th key={h} style={{ padding: "11px 10px", textAlign: i === 0 ? "left" : "center", color: T.sub, fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {oneriler.map(i => (
+                  <tr key={i.id} style={{ borderBottom: `1px solid ${T.line}`, background: i.aciliyet === "kritik" ? T.redSoft : "transparent" }}>
+                    <td style={{ padding: "11px 10px" }}>
+                      <div style={{ fontWeight: 600, color: T.ink }}>{i.name}</div>
+                      {i.supplier && <div style={{ fontSize: 11, color: T.faint }}>{i.supplier}</div>}
+                    </td>
+                    <td style={{ padding: "11px 10px", textAlign: "center", fontWeight: 600, color: i.aciliyet === "kritik" ? T.red : T.ink }}>
+                      {sayi(i.depo)} <span style={{ fontSize: 11, color: T.faint, fontWeight: 400 }}>{i.unit}</span>
+                    </td>
+                    <td style={{ padding: "11px 10px", textAlign: "center", color: T.sub }}>{sayi(i.gunlukHiz.toFixed(1))}</td>
+                    <td style={{ padding: "11px 10px", textAlign: "center" }}>
+                      {i.kalanGun !== null ? (
+                        <span style={{ color: i.kalanGun < 7 ? T.red : i.kalanGun < 15 ? T.amber : T.sub, fontWeight: i.kalanGun < 7 ? 700 : 400 }}>
+                          ~{i.kalanGun} gün
+                        </span>
+                      ) : <span style={{ color: T.faint }}>—</span>}
+                    </td>
+                    <td style={{ padding: "11px 10px", textAlign: "center" }}>
+                      <input type="number" min="0" value={miktar(i)}
+                        onChange={e => setSecili(p => ({ ...p, [i.id]: Number(e.target.value) || 0 }))}
+                        style={{ ...S.input, marginBottom: 0, width: 90, padding: "6px 8px", textAlign: "center", fontSize: 14, fontWeight: 700 }} />
+                      <div style={{ fontSize: 11, color: T.faint, marginTop: 2 }}>{i.unit}</div>
+                    </td>
+                    <td style={{ padding: "11px 10px", textAlign: "center", color: T.sub }}>
+                      {i.unit_cost ? `${sayi((miktar(i) * i.unit_cost).toFixed(0))} ₺` : "—"}
+                    </td>
+                    <td style={{ padding: "11px 10px", textAlign: "center" }}>
+                      <span style={S.tag(i.aciliyet === "kritik" ? "#fff" : i.aciliyet === "yakin" ? T.amberSoft : T.greenSoft, RENK[i.aciliyet])}>
+                        {ETIKET[i.aciliyet]}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {oneriler.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: T.faint, lineHeight: 1.6 }}>
+            Önerilen miktar = ({ufuk} günlük tüketim + kritik seviye) − depo mevcudu.
+            Rakamları elle değiştirebilirsiniz; Excel çıktısı düzenlediğiniz haliyle iner.
+          </div>
+        )}
       </div>
     </div>
   );
