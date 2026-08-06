@@ -7,7 +7,11 @@ import { createClient } from "@supabase/supabase-js";
 const URL_ = import.meta.env.VITE_SUPABASE_URL;
 const KEY_ = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supa = URL_ && KEY_ ? createClient(URL_, KEY_) : null;
+export const supa = URL_ && KEY_
+  ? createClient(URL_, KEY_, {
+      auth: { persistSession: true, autoRefreshToken: true, storageKey: "cop31-oturum" },
+    })
+  : null;
 export const isOnline = !!supa;
 
 /* ── KİMLİK DOĞRULAMA (Supabase Auth) ──
@@ -15,9 +19,17 @@ export const isOnline = !!supa;
    veya veritabanı üzerinden okunamaz. */
 
 /* Yönetici yeni personel oluştururken kendi oturumu düşmesin diye
-   ayrı bir istemci kullanılır (oturum saklamaz). */
+   ayrı bir istemci kullanılır. Kendi depolama anahtarı verilir ki
+   ana oturumla çakışmasın ("Multiple GoTrueClient" uyarısını önler). */
 const adminClient = URL_ && KEY_
-  ? createClient(URL_, KEY_, { auth: { persistSession: false, autoRefreshToken: false } })
+  ? createClient(URL_, KEY_, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        storageKey: "cop31-admin-gecici",
+      },
+    })
   : null;
 
 export const MIN_SIFRE = 8;
