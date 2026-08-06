@@ -55,7 +55,7 @@ const ALL_TABS = [
   { id: "saha",      label: "Saha kaydı",  desc: "QR ile giriş/çıkış" },
   { id: "atik",      label: "Atık girişi", desc: "Tür, kg, hedef, fotoğraf" },
   { id: "gorev",     label: "Görev atama", desc: "Bölge sorumlulukları, SLA" },
-  { id: "olay",      label: "Olaylar",     desc: "Sorun bildirimi" },
+  { id: "olay",      label: "Arıza & Talep", desc: "Arıza bildirimi, takip, performans" },
   { id: "rapor",     label: "Rapor",       desc: "Özet + CSV dışa aktarım" },
   { id: "personel",  label: "Personel",    desc: "Ekip yönetimi", admin: true },
   { id: "bolge",     label: "Bölgeler",    desc: "Bölge ekle/düzenle", admin: true },
@@ -273,6 +273,7 @@ function App({ user, logout }) {
   const [roles, setRoles] = useState([]);
   const [depts, setDepts] = useState([]);
   const [shifts, setShifts] = useState([]);
+  const [ticketCats, setTicketCats] = useState([]);
   const [qrZone, setQrZone] = useState(null);
   const mobil = useIsMobile();
   const [menuAcik, setMenuAcik] = useState(false);
@@ -284,11 +285,11 @@ function App({ user, logout }) {
   const [sifreMsg, setSifreMsg] = useState("");
 
   const reload = useCallback(async () => {
-    const [s, c, w, i, a, t, z, tk, jr, dp, sh] = await Promise.all([
+    const [s, c, w, i, a, t, z, tk, jr, dp, sh, tc] = await Promise.all([
       fetchAll("staff"), fetchAll("clean_logs"), fetchAll("waste_logs"),
       fetchAll("incidents"), fetchAll("assignments"), fetchAll("targets"),
       fetchAll("zones"), fetchAll("tasks"), fetchAll("job_roles"), fetchAll("departments"),
-      fetchAll("shifts"),
+      fetchAll("shifts"), fetchAll("ticket_categories"),
     ]);
     setStaff(s.filter(x => x.active !== false));
     setCleanLogs(c.filter(x => x.active !== false));
@@ -301,6 +302,7 @@ function App({ user, logout }) {
     setRoles(jrActive.length > 0 ? jrActive : FALLBACK_ROLES.map(n => ({ name: n })));
     setDepts(dp.filter(x => x.active !== false));
     setShifts(sh.filter(x => x.active !== false));
+    setTicketCats(tc.filter(x => x.active !== false));
     // Bölgeleri normalize et: her kayıtta id = code olsun (eski kod uyumu için).
     // zones tablosu yoksa (yerel mod / eski kurulum) yedek listeye düş.
     const zActive = z.filter(x => x.active !== false);
@@ -323,7 +325,7 @@ function App({ user, logout }) {
   const allowed = allowedTabsFor(user);
   const NAV = ALL_TABS.filter(t => allowed.includes(t.id));
 
-  const ctx = { user, staff, zones, tasks, roles, depts, shifts, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
+  const ctx = { user, staff, zones, tasks, roles, depts, shifts, ticketCats, cleanLogs, wasteLogs, incidents, assignments, targets, reload, qrZone };
 
   // Kullanıcının erişimi olmayan bir sekmedeyse ilk izinli sekmeye düş
   useEffect(() => {
@@ -577,7 +579,7 @@ function Dashboard({ user, zones = [], cleanLogs, wasteLogs, incidents, targets,
   const recycled = wasteLogs.filter(w => w.destination === "Geri Dönüşüm Tesisi").reduce((s, w) => s + Number(w.amount), 0);
   const rate = totalWaste > 0 ? Math.round((recycled / totalWaste) * 100) : 0;
   const carbon = wasteLogs.reduce((s, w) => s + carbonOf(w), 0);
-  const openInc = incidents.filter(i => i.status === "Açık").length;
+  const openInc = incidents.filter(i => !["kapandi", "iptal"].includes(i.status)).length;
 
   const tRate = targets.find(t => t.key === "recycle_rate")?.value ?? 75;
   const tLandfill = targets.find(t => t.key === "max_landfill_kg")?.value ?? 500;
@@ -970,85 +972,882 @@ function Assignments({ user, zones = [], staff, assignments, cleanLogs, reload }
 }
 
 /* ═══════════ OLAYLAR ═══════════ */
-function Incidents({ user, zones = [], incidents, reload }) {
-  const [zone, setZone] = useState("");
-  const [severity, setSeverity] = useState("low");
-  const [desc, setDesc] = useState("");
-  const SEV = {
-    low: { label: "Düşük", color: T.blue, soft: T.blueSoft },
-    medium: { label: "Orta", color: T.amber, soft: T.amberSoft },
-    high: { label: "Yüksek", color: T.red, soft: T.redSoft },
-  };
+/* ═══════════ ARIZA / TALEP YÖNETİMİ ═══════════
+   Otel operasyon sistemleri mantığı: bildirim → departmana yönlendirme →
+   kabul → müdahale → çözüm → doğrulama/kapanış. Her adımın zamanı
+   kaydedilir, SLA hedefleriyle karşılaştırılıp performans raporlanır. */
 
-  const submit = async () => {
-    if (!zone || !desc.trim()) return;
-    await insertRow("incidents", { zone, severity, description: desc.trim(), status: "Açık", staff_name: user.name }, user.name);
-    setDesc(""); reload();
-  };
+const TICKET_DURUM = [
+  { id: "acik",     label: "Açık",         color: "#b03030", soft: "#fbeaea", sira: 1 },
+  { id: "kabul",    label: "Kabul edildi", color: "#2f6fb2", soft: "#e9f1f9", sira: 2 },
+  { id: "devam",    label: "Müdahale",     color: "#b07d1e", soft: "#faf3e3", sira: 3 },
+  { id: "cozuldu",  label: "Çözüldü",      color: "#2a9d8f", soft: "#e4f4f2", sira: 4 },
+  { id: "kapandi",  label: "Kapatıldı",    color: "#1e6b45", soft: "#e6f2ec", sira: 5 },
+  { id: "iptal",    label: "İptal",        color: "#6c757d", soft: "#eef0ef", sira: 6 },
+];
+const tDurum = (id) => TICKET_DURUM.find(d => d.id === id) || TICKET_DURUM[0];
+
+const TICKET_ONCELIK = [
+  { id: "kritik", label: "Kritik", color: "#a02c2c", carpan: 0.5 },
+  { id: "yuksek", label: "Yüksek", color: "#b03030", carpan: 0.75 },
+  { id: "orta",   label: "Orta",   color: "#b07d1e", carpan: 1 },
+  { id: "dusuk",  label: "Düşük",  color: "#2f6fb2", carpan: 2 },
+];
+const tOncelik = (id) => TICKET_ONCELIK.find(p => p.id === id) || TICKET_ONCELIK[2];
+
+/* Dakikayı okunaklı süreye çevirir */
+function sureMetni(dk) {
+  if (dk === null || dk === undefined || isNaN(dk)) return "—";
+  const d = Math.max(0, Math.round(dk));
+  if (d < 60) return `${d} dk`;
+  const s = Math.floor(d / 60), k = d % 60;
+  if (s < 24) return k ? `${s} sa ${k} dk` : `${s} sa`;
+  const g = Math.floor(s / 24), sk = s % 24;
+  return sk ? `${g} gün ${sk} sa` : `${g} gün`;
+}
+
+/* İki zaman arasındaki dakika farkı */
+const dkFark = (a, b) => (a && b) ? (new Date(b) - new Date(a)) / 60000 : null;
+
+/* Bir arızanın süre ve SLA bilgilerini hesaplar */
+function arizaMetrik(t) {
+  const yanit  = dkFark(t.created_at, t.acknowledged_at);
+  const cozum  = dkFark(t.created_at, t.resolved_at);
+  const kapanis= dkFark(t.created_at, t.closed_at);
+  const acikMi = !["kapandi", "iptal"].includes(t.status);
+  const gecenSure = dkFark(t.created_at, new Date().toISOString());
+
+  const hedefYanit = t.sla_response_min ?? 30;
+  const hedefCozum = t.sla_resolve_min ?? 240;
+
+  /* Yanıt SLA: kabul edilmişse gerçekleşen, edilmemişse geçen süre */
+  const yanitSure = yanit ?? (acikMi && t.status === "acik" ? gecenSure : null);
+  const yanitAsim = yanitSure !== null && yanitSure > hedefYanit;
+
+  const cozumSure = cozum ?? (acikMi ? gecenSure : null);
+  const cozumAsim = cozumSure !== null && cozumSure > hedefCozum;
+
+  return { yanit, cozum, kapanis, yanitSure, cozumSure, hedefYanit, hedefCozum,
+           yanitAsim, cozumAsim, acikMi, gecenSure,
+           slaUygun: !yanitAsim && !cozumAsim };
+}
+
+function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], ticketCats = [], reload }) {
+  const mobil = useIsMobile();
+  const isAdmin = user.is_admin;
+  const [gorunum, setGorunum] = useState("liste");   // liste | yeni | performans
+  const [acikId, setAcikId] = useState(null);
+  const [fDurum, setFDurum] = useState("acik");      // acik = kapanmamışlar
+  const [fDept, setFDept] = useState("hepsi");
+  const [ara, setAra] = useState("");
+
+  /* Kullanıcı hangi arızaları görür: yönetici hepsini,
+     diğerleri kendi departmanına düşen + kendi bildirdikleri */
+  const gorunur = incidents.filter(t => {
+    if (isAdmin) return true;
+    return t.assigned_dept === user.department
+        || t.assignee_id === user.id
+        || t.staff_name === user.name;
+  });
+
+  const liste = gorunur
+    .filter(t => fDurum === "acik" ? !["kapandi", "iptal"].includes(t.status)
+               : fDurum === "hepsi" ? true : t.status === fDurum)
+    .filter(t => fDept === "hepsi" || t.assigned_dept === fDept)
+    .filter(t => {
+      const q = ara.trim().toLowerCase();
+      if (!q) return true;
+      return (t.description || "").toLowerCase().includes(q)
+          || String(t.ticket_no || "").includes(q)
+          || (t.category || "").toLowerCase().includes(q)
+          || (t.zone || "").toLowerCase().includes(q);
+    })
+    .slice()
+    .sort((a, b) => {
+      /* Önce SLA aşanlar, sonra öncelik, sonra yenilik */
+      const ma = arizaMetrik(a), mb = arizaMetrik(b);
+      if (ma.cozumAsim !== mb.cozumAsim) return ma.cozumAsim ? -1 : 1;
+      const w = { kritik: 0, yuksek: 1, orta: 2, dusuk: 3 };
+      const fark = (w[a.severity] ?? 2) - (w[b.severity] ?? 2);
+      if (fark) return fark;
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+  if (acikId) {
+    const t = incidents.find(x => x.id === acikId);
+    if (!t) { setAcikId(null); return null; }
+    return <ArizaDetay ticket={t} user={user} isAdmin={isAdmin} staff={staff} zones={zones}
+      onBack={() => setAcikId(null)} reload={reload} />;
+  }
+
+  if (gorunum === "performans") {
+    return <ArizaPerformans incidents={gorunur} depts={depts} staff={staff}
+      onBack={() => setGorunum("liste")} />;
+  }
+
+  /* Üst özet kartları */
+  const acikSayi = gorunur.filter(t => t.status === "acik").length;
+  const devamSayi = gorunur.filter(t => ["kabul", "devam"].includes(t.status)).length;
+  const asimSayi = gorunur.filter(t => { const m = arizaMetrik(t); return m.acikMi && (m.cozumAsim || m.yanitAsim); }).length;
+  const bugunKapanan = gorunur.filter(t => t.closed_at && isToday(t.closed_at)).length;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-      <div style={S.card}>
-        <div style={S.h2}>Olay bildir</div>
-        <div style={S.sub}>Dökülme, arıza, taşma veya güvenlik sorunları.</div>
-        <label style={S.label}>Bölge</label>
-        <select style={S.input} value={zone} onChange={e => setZone(e.target.value)}>
-          <option value="">Seçin</option>
-          {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
-        </select>
-        <label style={S.label}>Önem</label>
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          {Object.entries(SEV).map(([k, v]) => (
-            <button key={k} onClick={() => setSeverity(k)} style={{
-              ...S.btn, flex: 1, padding: "10px 8px", fontSize: 13,
-              background: severity === k ? v.color : "#fbfcfb",
-              color: severity === k ? "#fff" : T.sub,
-              border: `1.5px solid ${severity === k ? v.color : T.line}`,
-            }}>{v.label}</button>
-          ))}
-        </div>
-        <label style={S.label}>Açıklama</label>
-        <textarea style={{ ...S.input, height: 90, resize: "vertical" }} placeholder="Ne oldu?" value={desc} onChange={e => setDesc(e.target.value)} />
-        <button onClick={submit} disabled={!zone || !desc.trim()} style={{ ...S.btn, ...S.btnRed, width: "100%", opacity: (!zone || !desc.trim()) ? 0.4 : 1 }}>Bildir</button>
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {[
+          { l: "Açık arıza", v: acikSayi, c: acikSayi > 0 ? T.red : T.faint },
+          { l: "Müdahalede", v: devamSayi, c: T.amber },
+          { l: "Süre aşımı", v: asimSayi, c: asimSayi > 0 ? T.red : T.green },
+          { l: "Bugün kapanan", v: bugunKapanan, c: T.green },
+        ].map(k => (
+          <div key={k.l} style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${k.c}` }}>
+            <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{k.l}</div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 26, fontWeight: 800, color: T.ink }}>{k.v}</div>
+          </div>
+        ))}
       </div>
 
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <button onClick={() => setGorunum("yeni")} style={{ ...S.btn, ...S.btnGreen }}>+ Arıza bildir</button>
+        <button onClick={() => setGorunum("performans")} style={{ ...S.btn, ...S.btnGhost }}>Performans raporu</button>
+      </div>
+
+      {gorunum === "yeni" && (
+        <ArizaBildir user={user} zones={zones} depts={depts} staff={staff} ticketCats={ticketCats}
+          onKapat={() => setGorunum("liste")} reload={reload} />
+      )}
+
       <div style={S.card}>
-        <div style={S.h2}>Olay listesi ({incidents.length})</div>
-        {incidents.length === 0 ? (
-          <div style={{ padding: "30px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>Açık olay yok.</div>
-        ) : (
-          <div style={{ marginTop: 10 }}>
-            {incidents.slice().reverse().map(i => (
-              <div key={i.id} style={{ padding: "12px 0", borderBottom: `1px solid ${T.line}` }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <span style={S.tag(SEV[i.severity].soft, SEV[i.severity].color)}>{SEV[i.severity].label}</span>
-                  <span style={{ fontSize: 13, color: T.sub }}>{i.zone} · {i.staff_name}</span>
-                  <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-                    {i.status === "Açık" ? (
-                      <button onClick={async () => { await updateRow("incidents", i.id, { status: "Kapatıldı" }, user.name); reload(); }}
-                        style={{ ...S.btn, padding: "5px 12px", fontSize: 12, background: T.greenSoft, color: T.green }}>Kapat</button>
-                    ) : <span style={S.tag("#eef0ef", T.faint)}>Kapatıldı</span>}
-                    {user.is_admin && (
-                      <button onClick={async () => {
-                        if (!window.confirm(`Olay kaydı KALICI silinecek:\n"${i.description}"\n\nBu işlem geri alınamaz. Devam edilsin mi?`)) return;
-                        await hardDeleteRow("incidents", i.id, user.name); reload();
-                      }} title="Kaydı sil (yalnız yönetici)" style={{ ...S.btn, padding: "5px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
-                    )}
-                  </span>
-                </div>
-                <div style={{ fontSize: 14, color: T.ink, marginTop: 6 }}>{i.description}</div>
-                <div style={{ fontSize: 12, color: T.faint, marginTop: 3 }}>{trDate(i.created_at)} {trTime(i.created_at)}</div>
-              </div>
-            ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ flex: 1, minWidth: 120 }}>
+            <div style={S.h2}>Arıza kayıtları</div>
+            <div style={{ fontSize: 13, color: T.sub }}>{liste.length} kayıt</div>
           </div>
-        )}
+          <input style={{ ...S.input, marginBottom: 0, width: mobil ? "100%" : 190, padding: "9px 12px", fontSize: 14 }}
+            placeholder="No, açıklama, bölge…" value={ara} onChange={e => setAra(e.target.value)} />
+          {depts.length > 0 && (
+            <select style={{ ...S.input, marginBottom: 0, width: "auto", minWidth: 150, padding: "9px 12px", fontSize: 13.5 }}
+              value={fDept} onChange={e => setFDept(e.target.value)}>
+              <option value="hepsi">Tüm departmanlar</option>
+              {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+            </select>
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
+          {[{ id: "acik", label: "Açık işler" }, { id: "hepsi", label: "Hepsi" }, ...TICKET_DURUM].map(d => (
+            <button key={d.id} onClick={() => setFDurum(d.id)} style={{
+              ...S.btn, padding: "6px 11px", fontSize: 12, minHeight: 0,
+              background: fDurum === d.id ? T.green : "#fbfcfb",
+              color: fDurum === d.id ? "#fff" : T.sub,
+              border: `1.5px solid ${fDurum === d.id ? T.green : T.line}`,
+            }}>{d.label}</button>
+          ))}
+        </div>
+
+        {liste.length === 0 ? (
+          <div style={{ padding: "40px 0", textAlign: "center", color: T.faint, fontSize: 13.5 }}>
+            Kayıt bulunamadı.
+          </div>
+        ) : liste.map(t => {
+          const d = tDurum(t.status), p = tOncelik(t.severity), m = arizaMetrik(t);
+          const bolge = zones.find(z => z.id === t.zone);
+          return (
+            <div key={t.id} onClick={() => setAcikId(t.id)} style={{
+              padding: "13px 0", borderBottom: `1px solid ${T.line}`, cursor: "pointer",
+              borderLeft: m.acikMi && m.cozumAsim ? `3px solid ${T.red}` : "3px solid transparent",
+              paddingLeft: m.acikMi && m.cozumAsim ? 10 : 0,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: T.faint, fontWeight: 700 }}>#{t.ticket_no}</span>
+                <span style={S.tag(d.soft, d.color)}>{d.label}</span>
+                <span style={S.tag(p.color + "1a", p.color)}>{p.label}</span>
+                {m.acikMi && m.cozumAsim && <span style={S.tag(T.redSoft, T.red)}>⚠ süre aşımı</span>}
+                {t.escalated && <span style={S.tag(T.amberSoft, T.amber)}>↑ eskalasyon</span>}
+                <span style={{ fontWeight: 600, fontSize: 14, color: T.ink, flex: 1, minWidth: 140 }}>
+                  {t.category ? `${t.category} — ` : ""}{t.description}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, color: T.sub, alignItems: "center" }}>
+                <span>📍 {bolge?.name || t.zone}</span>
+                {t.assigned_dept && <span>🏢 {t.assigned_dept}</span>}
+                {t.assignee_name && <span>👤 {t.assignee_name}</span>}
+                <span style={{ color: m.acikMi ? (m.cozumAsim ? T.red : T.faint) : T.green, fontWeight: m.cozumAsim ? 700 : 400 }}>
+                  {m.acikMi ? `⏱ ${sureMetni(m.gecenSure)} açık` : `✓ ${sureMetni(m.kapanis ?? m.cozum)} içinde çözüldü`}
+                </span>
+                <span style={{ marginLeft: "auto", color: T.blue, fontWeight: 600 }}>Aç →</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
+/* ── ARIZA BİLDİRİM FORMU ── */
+function ArizaBildir({ user, zones, depts, staff, ticketCats, onKapat, reload }) {
+  const [f, setF] = useState({ zone: "", category: "", severity: "orta", description: "", assigned_dept: "", assignee_id: "" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const [foto, setFoto] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  /* Kategori seçilince departman ve SLA otomatik gelir */
+  const kategoriSec = (ad) => {
+    const k = ticketCats.find(c => c.name === ad);
+    setF(p => ({ ...p, category: ad, assigned_dept: k?.department || p.assigned_dept, assignee_id: "" }));
+  };
+
+  const seciliKat = ticketCats.find(c => c.name === f.category);
+  const carpan = tOncelik(f.severity).carpan;
+  const slaYanit = Math.round((seciliKat?.sla_response_min ?? 30) * carpan);
+  const slaCozum = Math.round((seciliKat?.sla_resolve_min ?? 240) * carpan);
+
+  const deptPersonel = staff.filter(s => !f.assigned_dept || s.department === f.assigned_dept);
+
+  const gonder = async () => {
+    if (!f.zone || !f.description.trim() || busy) return;
+    setBusy(true);
+    let photo_url = null;
+    if (foto) { const up = await uploadFile(foto, "kanit"); if (up) photo_url = up.url; }
+    const p = staff.find(s => s.id === f.assignee_id);
+    const kayit = await insertRow("incidents", {
+      zone: f.zone, category: f.category || null, severity: f.severity,
+      description: f.description.trim(), status: "acik",
+      assigned_dept: f.assigned_dept || null,
+      assignee_id: f.assignee_id || null, assignee_name: p?.name || null,
+      sla_response_min: slaYanit, sla_resolve_min: slaCozum,
+      staff_name: user.name, photo_url,
+    }, user.name);
+    if (kayit?.id) {
+      await insertRow("ticket_history", { ticket_id: kayit.id, actor: user.name, action: "BİLDİRİM",
+        detail: `${f.category || "Arıza"} · ${f.assigned_dept || "departman atanmadı"}` }, user.name);
+    }
+    if (p?.email) {
+      await sendTaskEmail({ to: p.email, name: p.name, title: `Arıza: ${f.description.slice(0, 60)}`,
+        due: null, priority: f.severity, assignedBy: user.name });
+    }
+    setBusy(false); onKapat(); reload();
+  };
+
+  return (
+    <div style={{ ...S.card, borderColor: T.green }}>
+      <div style={S.h2}>Yeni arıza / talep bildir</div>
+      <div style={S.sub}>Kategori seçince ilgili departman ve hedef süreler otomatik gelir.</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+        <div>
+          <label style={S.label}>Bölge / konum <span style={{ color: T.red }}>*</span></label>
+          <select style={S.input} value={f.zone} onChange={e => set("zone", e.target.value)}>
+            <option value="">Seçin</option>
+            {zones.map(z => <option key={z.id} value={z.id}>{z.id} — {z.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Arıza türü</label>
+          <select style={S.input} value={f.category} onChange={e => kategoriSec(e.target.value)}>
+            <option value="">Seçin</option>
+            {ticketCats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>İlgili departman</label>
+          <select style={S.input} value={f.assigned_dept} onChange={e => { set("assigned_dept", e.target.value); set("assignee_id", ""); }}>
+            <option value="">— Atanmadı —</option>
+            {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Sorumlu kişi (isteğe bağlı)</label>
+          <select style={S.input} value={f.assignee_id} onChange={e => set("assignee_id", e.target.value)}>
+            <option value="">— Departman havuzuna bırak —</option>
+            {deptPersonel.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <label style={S.label}>Öncelik</label>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {TICKET_ONCELIK.map(p => (
+          <button key={p.id} onClick={() => set("severity", p.id)} style={{
+            ...S.btn, flex: 1, minWidth: 90, padding: "10px 8px", fontSize: 13,
+            background: f.severity === p.id ? p.color : "#fbfcfb",
+            color: f.severity === p.id ? "#fff" : T.sub,
+            border: `1.5px solid ${f.severity === p.id ? p.color : T.line}`,
+          }}>{p.label}</button>
+        ))}
+      </div>
+
+      <div style={{ background: T.blueSoft, borderRadius: 9, padding: 11, fontSize: 12.5, color: T.blue, marginBottom: 12 }}>
+        Hedef süreler — kabul: <b>{sureMetni(slaYanit)}</b> · çözüm: <b>{sureMetni(slaCozum)}</b>
+      </div>
+
+      <label style={S.label}>Açıklama <span style={{ color: T.red }}>*</span></label>
+      <textarea style={{ ...S.input, height: 80, resize: "vertical" }} placeholder="Arızayı tarif edin…"
+        value={f.description} onChange={e => set("description", e.target.value)} />
+
+      <label style={S.label}>Fotoğraf (isteğe bağlı)</label>
+      <input style={{ ...S.input, padding: 9 }} type="file" accept="image/*" capture="environment"
+        onChange={e => setFoto(e.target.files?.[0] || null)} />
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={gonder} disabled={!f.zone || !f.description.trim() || busy}
+          style={{ ...S.btn, ...S.btnGreen, opacity: (!f.zone || !f.description.trim() || busy) ? 0.4 : 1 }}>
+          {busy ? "Gönderiliyor…" : "Arızayı bildir"}
+        </button>
+        <button onClick={onKapat} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+      </div>
+    </div>
+  );
+}
+
+/* ── ARIZA DETAY ── */
+function ArizaDetay({ ticket: t, user, isAdmin, staff, zones, onBack, reload }) {
+  const [yorumlar, setYorumlar] = useState([]);
+  const [gecmis, setGecmis] = useState([]);
+  const [metin, setMetin] = useState("");
+  const [dosya, setDosya] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [cozumNot, setCozumNot] = useState("");
+  const [atamaAcik, setAtamaAcik] = useState(false);
+  const [atananKisi, setAtananKisi] = useState("");
+
+  const m = arizaMetrik(t);
+  const d = tDurum(t.status), p = tOncelik(t.severity);
+  const bolge = zones.find(z => z.id === t.zone);
+  /* İşlem yapabilir: yönetici, atanan kişi veya o departmandaki personel */
+  const yetkili = isAdmin || t.assignee_id === user.id || (t.assigned_dept && t.assigned_dept === user.department);
+  const bildiren = t.staff_name === user.name;
+
+  const yukle = async () => {
+    const [c, h] = await Promise.all([fetchAll("ticket_comments"), fetchAll("ticket_history")]);
+    setYorumlar(c.filter(x => x.ticket_id === t.id && x.active !== false));
+    setGecmis(h.filter(x => x.ticket_id === t.id));
+  };
+  useEffect(() => { yukle(); }, [t.id]); // eslint-disable-line
+
+  const gecmisYaz = async (action, detail) => {
+    await insertRow("ticket_history", { ticket_id: t.id, actor: user.name, action, detail: detail || null }, user.name);
+  };
+
+  const durumDegistir = async (yeniDurum, ekstra = {}, aciklama = "") => {
+    setBusy(true);
+    await updateRow("incidents", t.id, { status: yeniDurum, ...ekstra }, user.name);
+    await gecmisYaz("DURUM", `${tDurum(t.status).label} → ${tDurum(yeniDurum).label}${aciklama ? ` · ${aciklama}` : ""}`);
+    setBusy(false); reload(); yukle();
+  };
+
+  const kabulEt = () => durumDegistir("kabul", {
+    acknowledged_at: new Date().toISOString(),
+    assignee_id: t.assignee_id || user.id,
+    assignee_name: t.assignee_name || user.name,
+  });
+  const basla = () => durumDegistir("devam", { started_at: new Date().toISOString() });
+  const cozdum = async () => {
+    if (!cozumNot.trim()) { alert("Lütfen ne yapıldığını kısaca yazın."); return; }
+    await durumDegistir("cozuldu", { resolved_at: new Date().toISOString(), resolution_note: cozumNot.trim() }, cozumNot.trim());
+    setCozumNot("");
+  };
+  const kapat = () => durumDegistir("kapandi", { closed_at: new Date().toISOString(), closed_by: user.name });
+  const yenidenAc = async () => {
+    const sebep = window.prompt("Neden yeniden açılıyor?");
+    if (sebep === null) return;
+    await durumDegistir("devam", { resolved_at: null, closed_at: null, reopened_count: (t.reopened_count || 0) + 1 }, sebep);
+  };
+  const iptalEt = async () => {
+    const sebep = window.prompt("İptal gerekçesi:");
+    if (sebep === null) return;
+    await durumDegistir("iptal", { closed_at: new Date().toISOString(), closed_by: user.name }, sebep);
+  };
+  const eskalasyon = async () => {
+    await updateRow("incidents", t.id, { escalated: true }, user.name);
+    await gecmisYaz("ESKALASYON", "Yönetime bildirildi");
+    reload(); yukle();
+  };
+
+  const atamaYap = async () => {
+    if (!atananKisi) return;
+    const kisi = staff.find(s => s.id === atananKisi);
+    setBusy(true);
+    await updateRow("incidents", t.id, {
+      assignee_id: kisi.id, assignee_name: kisi.name,
+      assigned_dept: kisi.department || t.assigned_dept,
+    }, user.name);
+    await gecmisYaz("ATAMA", `${t.assignee_name || "havuz"} → ${kisi.name}`);
+    if (kisi.email) {
+      await sendTaskEmail({ to: kisi.email, name: kisi.name, title: `Arıza #${t.ticket_no}: ${t.description.slice(0, 50)}`,
+        due: null, priority: t.severity, assignedBy: user.name });
+    }
+    setAtamaAcik(false); setAtananKisi(""); setBusy(false); reload(); yukle();
+  };
+
+  const yorumEkle = async () => {
+    if ((!metin.trim() && !dosya) || busy) return;
+    setBusy(true);
+    let file_url = null, file_name = null;
+    if (dosya) { const up = await uploadFile(dosya); if (up) { file_url = up.url; file_name = up.name; } }
+    await insertRow("ticket_comments", { ticket_id: t.id, author: user.name, body: metin.trim() || null, file_url, file_name }, user.name);
+    setMetin(""); setDosya(null); setBusy(false); yukle();
+  };
+
+  /* Zaman çizelgesi adımları */
+  const adimlar = [
+    { ad: "Bildirim", zaman: t.created_at, kisi: t.staff_name },
+    { ad: "Kabul", zaman: t.acknowledged_at, kisi: t.assignee_name, hedef: m.hedefYanit, gercek: m.yanit },
+    { ad: "Müdahale", zaman: t.started_at, kisi: t.assignee_name },
+    { ad: "Çözüm", zaman: t.resolved_at, kisi: t.assignee_name, hedef: m.hedefCozum, gercek: m.cozum },
+    { ad: "Kapanış", zaman: t.closed_at, kisi: t.closed_by },
+  ];
+
+  return (
+    <div style={{ maxWidth: 780, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Arıza listesi</button>
+        {isAdmin && !["kapandi", "iptal"].includes(t.status) && (
+          <button onClick={iptalEt} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: "#eef0ef", color: T.sub, marginLeft: "auto" }}>İptal et</button>
+        )}
+        {isAdmin && (
+          <button onClick={async () => {
+            if (!window.confirm(`#${t.ticket_no} arıza kaydı KALICI silinecek.\n\nGeri alınamaz. Devam edilsin mi?`)) return;
+            await hardDeleteRow("incidents", t.id, user.name); reload(); onBack();
+          }} style={{ ...S.btn, padding: "12px 16px", fontSize: 13.5, background: T.red, color: "#fff" }}>Sil</button>
+        )}
+      </div>
+
+      {/* Başlık */}
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <span style={{ fontFamily: "monospace", fontSize: 13, color: T.faint, fontWeight: 700 }}>#{t.ticket_no}</span>
+          <span style={S.tag(d.soft, d.color)}>{d.label}</span>
+          <span style={S.tag(p.color + "1a", p.color)}>{p.label}</span>
+          {t.escalated && <span style={S.tag(T.amberSoft, T.amber)}>↑ eskalasyon</span>}
+          {t.reopened_count > 0 && <span style={S.tag("#eef0ef", T.sub)}>↻ {t.reopened_count} kez yeniden açıldı</span>}
+        </div>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 18, fontWeight: 800, color: T.ink }}>
+          {t.category ? `${t.category}` : "Arıza"}
+        </div>
+        <div style={{ fontSize: 14.5, color: T.ink, marginTop: 6, lineHeight: 1.6 }}>{t.description}</div>
+        <div style={{ fontSize: 12.5, color: T.faint, marginTop: 10 }}>
+          📍 {bolge?.name || t.zone} · Bildiren: {t.staff_name}
+          {t.assigned_dept && <> · Departman: <b style={{ color: T.sub }}>{t.assigned_dept}</b></>}
+          {t.assignee_name && <> · Sorumlu: <b style={{ color: T.sub }}>{t.assignee_name}</b></>}
+        </div>
+        {t.photo_url && (
+          <a href={t.photo_url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 10 }}>
+            <img src={t.photo_url} alt="Arıza fotoğrafı" style={{ maxHeight: 160, borderRadius: 9, border: `1px solid ${T.line}` }} />
+          </a>
+        )}
+        {t.resolution_note && (
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: T.greenSoft, color: T.green, fontSize: 13.5 }}>
+            <b>Yapılan işlem:</b> {t.resolution_note}
+          </div>
+        )}
+      </div>
+
+      {/* Süre / SLA paneli */}
+      <div style={S.card}>
+        <div style={S.h2}>Süre takibi</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 12 }}>
+          {[
+            { l: "Kabul süresi", g: m.yanit, h: m.hedefYanit, asim: m.yanitAsim },
+            { l: "Çözüm süresi", g: m.cozum, h: m.hedefCozum, asim: m.cozumAsim },
+            { l: "Toplam (kapanışa dek)", g: m.kapanis, h: null, asim: false },
+          ].map(x => (
+            <div key={x.l} style={{ background: "#fafbfa", borderRadius: 10, padding: 12, border: `1px solid ${T.line}` }}>
+              <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600 }}>{x.l}</div>
+              <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 19, fontWeight: 800, color: x.asim ? T.red : (x.g !== null ? T.green : T.faint), marginTop: 4 }}>
+                {x.g !== null ? sureMetni(x.g) : (m.acikMi ? sureMetni(m.gecenSure) + " (devam)" : "—")}
+              </div>
+              {x.h !== null && <div style={{ fontSize: 11, color: T.faint, marginTop: 2 }}>Hedef: {sureMetni(x.h)}</div>}
+            </div>
+          ))}
+        </div>
+        {m.acikMi && (m.yanitAsim || m.cozumAsim) && (
+          <div style={{ marginTop: 12, padding: 11, borderRadius: 9, background: T.redSoft, color: T.red, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>⚠ Hedef süre aşıldı.</span>
+            {!t.escalated && yetkili && (
+              <button onClick={eskalasyon} style={{ ...S.btn, padding: "6px 12px", fontSize: 12, background: T.red, color: "#fff", minHeight: 0 }}>
+                Yönetime bildir
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Zaman çizelgesi */}
+      <div style={S.card}>
+        <div style={S.h2}>Süreç</div>
+        <div style={{ marginTop: 12 }}>
+          {adimlar.map((a, i) => {
+            const oldu = !!a.zaman;
+            const asim = a.hedef && a.gercek && a.gercek > a.hedef;
+            return (
+              <div key={a.ad} style={{ display: "flex", gap: 12, alignItems: "flex-start", paddingBottom: i < adimlar.length - 1 ? 14 : 0 }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                  <div style={{ width: 20, height: 20, borderRadius: "50%", background: oldu ? (asim ? T.red : T.green) : "#eef0ef",
+                    color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                    {oldu ? "✓" : i + 1}
+                  </div>
+                  {i < adimlar.length - 1 && <div style={{ width: 2, flex: 1, minHeight: 22, background: oldu ? T.green : "#eef0ef", marginTop: 2 }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0, paddingTop: 1 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: oldu ? T.ink : T.faint }}>{a.ad}</div>
+                  {oldu ? (
+                    <div style={{ fontSize: 12, color: T.sub }}>
+                      {new Date(a.zaman).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {a.kisi ? ` · ${a.kisi}` : ""}
+                      {a.gercek !== null && a.gercek !== undefined && (
+                        <span style={{ color: asim ? T.red : T.green, fontWeight: 600 }}> · {sureMetni(a.gercek)}</span>
+                      )}
+                    </div>
+                  ) : <div style={{ fontSize: 12, color: T.faint }}>bekliyor</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Aksiyonlar */}
+      <div style={S.card}>
+        <div style={S.h2}>İşlem</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+          {yetkili && t.status === "acik" && (
+            <button onClick={kabulEt} disabled={busy} style={{ ...S.btn, background: tDurum("kabul").color, color: "#fff" }}>Kabul et (üzerime al)</button>
+          )}
+          {yetkili && t.status === "kabul" && (
+            <button onClick={basla} disabled={busy} style={{ ...S.btn, background: tDurum("devam").color, color: "#fff" }}>Müdahaleye başla</button>
+          )}
+          {yetkili && ["kabul", "devam"].includes(t.status) && (
+            <div style={{ width: "100%", marginTop: 8 }}>
+              <label style={S.label}>Yapılan işlem (çözüm notu)</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input style={{ ...S.input, marginBottom: 0, flex: 1, minWidth: 180 }} placeholder="Ne yapıldı?"
+                  value={cozumNot} onChange={e => setCozumNot(e.target.value)} />
+                <button onClick={cozdum} disabled={busy} style={{ ...S.btn, ...S.btnGreen }}>Çözüldü olarak işaretle</button>
+              </div>
+            </div>
+          )}
+          {t.status === "cozuldu" && (
+            <>
+              {(isAdmin || bildiren) ? (
+                <>
+                  <button onClick={kapat} disabled={busy} style={{ ...S.btn, ...S.btnGreen }}>Doğrula ve kapat</button>
+                  <button onClick={yenidenAc} disabled={busy} style={{ ...S.btn, ...S.btnRed }}>Çözülmemiş — yeniden aç</button>
+                </>
+              ) : (
+                <span style={{ fontSize: 13.5, color: T.blue }}>Bildiren kişinin/yöneticinin doğrulaması bekleniyor…</span>
+              )}
+            </>
+          )}
+          {t.status === "kapandi" && (
+            <span style={{ fontSize: 13.5, color: T.green, fontWeight: 600 }}>
+              ✓ {t.closed_by} tarafından kapatıldı · toplam {sureMetni(m.kapanis)}
+            </span>
+          )}
+          {t.status === "iptal" && <span style={{ fontSize: 13.5, color: T.sub }}>Bu kayıt iptal edildi.</span>}
+
+          {isAdmin && !["kapandi", "iptal"].includes(t.status) && (
+            atamaAcik ? (
+              <div style={{ width: "100%", display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                <select style={{ ...S.input, marginBottom: 0, flex: 1, minWidth: 180 }} value={atananKisi} onChange={e => setAtananKisi(e.target.value)}>
+                  <option value="">Kime atanacak?</option>
+                  {staff.map(s => <option key={s.id} value={s.id}>{s.name}{s.department ? ` · ${s.department}` : ""}</option>)}
+                </select>
+                <button onClick={atamaYap} disabled={!atananKisi || busy} style={{ ...S.btn, ...S.btnGreen, opacity: !atananKisi ? 0.4 : 1 }}>Ata</button>
+                <button onClick={() => setAtamaAcik(false)} style={{ ...S.btn, ...S.btnGhost }}>İptal</button>
+              </div>
+            ) : (
+              <button onClick={() => setAtamaAcik(true)} style={{ ...S.btn, background: T.blueSoft, color: T.blue }}>
+                {t.assignee_name ? "Sorumluyu değiştir" : "Sorumlu ata"}
+              </button>
+            )
+          )}
+        </div>
+      </div>
+
+      {/* Yorumlar */}
+      <div style={S.card}>
+        <div style={S.h2}>Notlar ve fotoğraflar</div>
+        <div style={{ margin: "12px 0" }}>
+          {yorumlar.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.faint, padding: "10px 0" }}>Not yok.</div>
+          ) : yorumlar.map(c => (
+            <div key={c.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 600, fontSize: 13.5, color: T.ink }}>{c.author}</span>
+                <span style={{ fontSize: 12, color: T.faint }}>{new Date(c.created_at).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+              {c.body && <div style={{ fontSize: 14, color: T.ink, marginTop: 3 }}>{c.body}</div>}
+              {c.file_url && (
+                <a href={c.file_url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 6, fontSize: 13, color: T.blue, textDecoration: "none", background: T.blueSoft, padding: "6px 12px", borderRadius: 8 }}>
+                  📎 {c.file_name || "dosya"}
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+        <textarea style={{ ...S.input, height: 60, resize: "vertical" }} placeholder="Not ekleyin…" value={metin} onChange={e => setMetin(e.target.value)} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input type="file" onChange={e => setDosya(e.target.files?.[0] || null)} style={{ fontSize: 13, flex: 1, minWidth: 150 }} />
+          <button onClick={yorumEkle} disabled={(!metin.trim() && !dosya) || busy} style={{ ...S.btn, ...S.btnGreen, opacity: ((!metin.trim() && !dosya) || busy) ? 0.4 : 1 }}>Gönder</button>
+        </div>
+      </div>
+
+      {/* Geçmiş */}
+      {gecmis.length > 0 && (
+        <div style={S.card}>
+          <div style={S.h2}>İşlem geçmişi</div>
+          <div style={{ marginTop: 10 }}>
+            {gecmis.slice().reverse().map(h => (
+              <div key={h.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}`, fontSize: 13, flexWrap: "wrap" }}>
+                <span style={S.tag("#eef0ef", T.sub)}>{h.action}</span>
+                <span style={{ color: T.ink, flex: 1, minWidth: 120 }}>{h.detail}</span>
+                <span style={{ color: T.faint, fontSize: 12 }}>{h.actor} · {new Date(h.created_at).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── PERFORMANS RAPORU ── */
+function ArizaPerformans({ incidents, depts, staff, onBack }) {
+  const [gun, setGun] = useState(30);
+  const [excelBusy, setExcelBusy] = useState(false);
+
+  const sinir = useMemo(() => { const d = new Date(); d.setDate(d.getDate() - gun); return d; }, [gun]);
+  const kapsam = incidents.filter(t => new Date(t.created_at) >= sinir);
+  const kapanan = kapsam.filter(t => t.status === "kapandi");
+
+  const ort = (dizi) => dizi.length ? dizi.reduce((a, b) => a + b, 0) / dizi.length : null;
+  const yanitlar = kapsam.map(t => arizaMetrik(t).yanit).filter(x => x !== null);
+  const cozumler = kapanan.map(t => arizaMetrik(t).cozum).filter(x => x !== null);
+  const slaUygun = kapanan.filter(t => arizaMetrik(t).slaUygun).length;
+  const slaOran = kapanan.length ? Math.round((slaUygun / kapanan.length) * 100) : null;
+  const ilkSeferde = kapanan.filter(t => !t.reopened_count).length;
+  const ilkSeferOran = kapanan.length ? Math.round((ilkSeferde / kapanan.length) * 100) : null;
+
+  /* Departman performansı */
+  const deptPerf = [...new Set(kapsam.map(t => t.assigned_dept).filter(Boolean))].map(d => {
+    const m = kapsam.filter(t => t.assigned_dept === d);
+    const mk = m.filter(t => t.status === "kapandi");
+    const c = mk.map(t => arizaMetrik(t).cozum).filter(x => x !== null);
+    const uygun = mk.filter(t => arizaMetrik(t).slaUygun).length;
+    return { ad: d, toplam: m.length, kapanan: mk.length, acik: m.length - mk.length,
+      ortCozum: ort(c), sla: mk.length ? Math.round((uygun / mk.length) * 100) : null };
+  }).sort((a, b) => b.toplam - a.toplam);
+
+  /* Kişi performansı */
+  const kisiPerf = [...new Set(kapsam.map(t => t.assignee_name).filter(Boolean))].map(k => {
+    const m = kapsam.filter(t => t.assignee_name === k);
+    const mk = m.filter(t => t.status === "kapandi");
+    const c = mk.map(t => arizaMetrik(t).cozum).filter(x => x !== null);
+    const y = m.map(t => arizaMetrik(t).yanit).filter(x => x !== null);
+    const uygun = mk.filter(t => arizaMetrik(t).slaUygun).length;
+    return { ad: k, toplam: m.length, kapanan: mk.length, ortYanit: ort(y), ortCozum: ort(c),
+      sla: mk.length ? Math.round((uygun / mk.length) * 100) : null };
+  }).sort((a, b) => b.toplam - a.toplam);
+
+  /* Kategori dağılımı */
+  const katDagilim = [...new Set(kapsam.map(t => t.category).filter(Boolean))].map(c => ({
+    name: c, value: kapsam.filter(t => t.category === c).length,
+  })).sort((a, b) => b.value - a.value);
+
+  /* En çok arıza çıkan bölgeler */
+  const bolgeler = [...new Set(kapsam.map(t => t.zone).filter(Boolean))].map(z => ({
+    name: z, value: kapsam.filter(t => t.zone === z).length,
+  })).sort((a, b) => b.value - a.value).slice(0, 8);
+
+  const excelAktar = async () => {
+    setExcelBusy(true);
+    await stilliExcelIndir([
+      {
+        ad: "Özet", baslik: "Arıza Yönetimi · Performans Özeti",
+        basliklar: ["Gösterge", "Değer"],
+        satirlar: [
+          ["Dönem", `Son ${gun} gün`],
+          ["Toplam arıza", kapsam.length],
+          ["Kapatılan", kapanan.length],
+          ["Açık kalan", kapsam.length - kapanan.length],
+          ["Ortalama kabul süresi", sureMetni(ort(yanitlar))],
+          ["Ortalama çözüm süresi", sureMetni(ort(cozumler))],
+          ["SLA uyum oranı", slaOran !== null ? `%${slaOran}` : "—"],
+          ["İlk seferde çözüm", ilkSeferOran !== null ? `%${ilkSeferOran}` : "—"],
+        ],
+      },
+      {
+        ad: "Departman", baslik: "Departman Performansı",
+        basliklar: ["Departman", "Toplam", "Kapatılan", "Açık", "Ort. çözüm", "SLA uyum %"],
+        sayiSutunlari: [1, 2, 3, 5],
+        vurguSatir: (r) => r[5] !== "—" && Number(r[5]) < 70,
+        satirlar: deptPerf.map(d => [d.ad, d.toplam, d.kapanan, d.acik, sureMetni(d.ortCozum), d.sla ?? "—"]),
+      },
+      {
+        ad: "Personel", baslik: "Personel Performansı",
+        basliklar: ["Personel", "Üstlendiği", "Kapattığı", "Ort. kabul", "Ort. çözüm", "SLA uyum %"],
+        sayiSutunlari: [1, 2, 5],
+        satirlar: kisiPerf.map(k => [k.ad, k.toplam, k.kapanan, sureMetni(k.ortYanit), sureMetni(k.ortCozum), k.sla ?? "—"]),
+      },
+      {
+        ad: "Arıza Dökümü", baslik: "Arıza Kayıtları",
+        basliklar: ["No", "Tarih", "Bölge", "Kategori", "Öncelik", "Durum", "Departman", "Sorumlu",
+          "Kabul (dk)", "Çözüm (dk)", "SLA", "Açıklama", "Yapılan işlem"],
+        sayiSutunlari: [8, 9],
+        vurguSatir: (r) => r[10] === "AŞIM",
+        satirlar: kapsam.slice().reverse().map(t => {
+          const mm = arizaMetrik(t);
+          return [t.ticket_no, trDate(t.created_at), t.zone, t.category || "", tOncelik(t.severity).label,
+            tDurum(t.status).label, t.assigned_dept || "", t.assignee_name || "",
+            mm.yanit !== null ? Math.round(mm.yanit) : "", mm.cozum !== null ? Math.round(mm.cozum) : "",
+            mm.slaUygun ? "UYGUN" : "AŞIM",
+            (t.description || "").replace(/[\r\n]/g, " "), (t.resolution_note || "").replace(/[\r\n]/g, " ")];
+        }),
+      },
+    ], "COP31_Ariza_Performans");
+    setExcelBusy(false);
+  };
+
+  const KART = ({ l, v, alt, renk }) => (
+    <div style={{ ...S.card, marginBottom: 0, padding: 16, borderTop: `3px solid ${renk}` }}>
+      <div style={{ fontSize: 11.5, color: T.sub, fontWeight: 600, marginBottom: 6 }}>{l}</div>
+      <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 23, fontWeight: 800, color: T.ink }}>{v}</div>
+      {alt && <div style={{ fontSize: 11, color: T.faint, marginTop: 3 }}>{alt}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Arıza listesi</button>
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
+          {[7, 30, 90].map(g => (
+            <button key={g} onClick={() => setGun(g)} style={{
+              ...S.btn, padding: "8px 14px", fontSize: 12.5,
+              background: gun === g ? T.green : "#fbfcfb", color: gun === g ? "#fff" : T.sub,
+              border: `1.5px solid ${gun === g ? T.green : T.line}`,
+            }}>{g} gün</button>
+          ))}
+          <button onClick={excelAktar} disabled={excelBusy}
+            style={{ ...S.btn, padding: "8px 14px", fontSize: 12.5, background: T.greenSoft, color: T.green, opacity: excelBusy ? 0.5 : 1 }}>
+            {excelBusy ? "Hazırlanıyor…" : "⤓ Excel"}
+          </button>
+        </div>
+      </div>
+
+      {kapsam.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", padding: 50, color: T.faint }}>
+          Bu dönemde arıza kaydı yok.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 16 }}>
+            {KART({ l: "Toplam arıza", v: kapsam.length, alt: `${kapanan.length} kapatıldı`, renk: T.blue })}
+            {KART({ l: "Ort. kabul süresi", v: sureMetni(ort(yanitlar)), alt: "bildirimden üstlenmeye", renk: T.amber })}
+            {KART({ l: "Ort. çözüm süresi", v: sureMetni(ort(cozumler)), alt: "bildirimden çözüme", renk: T.green })}
+            {KART({ l: "SLA uyum", v: slaOran !== null ? `%${slaOran}` : "—", alt: "hedef sürede biten", renk: (slaOran ?? 100) >= 80 ? T.green : T.red })}
+            {KART({ l: "İlk seferde çözüm", v: ilkSeferOran !== null ? `%${ilkSeferOran}` : "—", alt: "yeniden açılmayan", renk: T.blue })}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+            {katDagilim.length > 0 && (
+              <div style={S.card}>
+                <div style={S.h2}>Arıza türü dağılımı</div>
+                <ResponsiveContainer width="100%" height={230}>
+                  <BarChart data={katDagilim} layout="vertical" margin={{ left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                    <XAxis type="number" tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: T.ink }} width={130} />
+                    <Tooltip contentStyle={S.tooltip} />
+                    <Bar dataKey="value" fill={T.blue} radius={[0, 5, 5, 0]} name="Adet" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            {bolgeler.length > 0 && (
+              <div style={S.card}>
+                <div style={S.h2}>En çok arıza çıkan bölgeler</div>
+                <div style={S.sub}>Tekrar eden noktalar kalıcı çözüm gerektirebilir</div>
+                <ResponsiveContainer width="100%" height={230}>
+                  <BarChart data={bolgeler}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.line} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: T.sub }} />
+                    <YAxis tick={{ fontSize: 11, fill: T.sub }} allowDecimals={false} />
+                    <Tooltip contentStyle={S.tooltip} />
+                    <Bar dataKey="value" fill={T.amber} radius={[5, 5, 0, 0]} name="Arıza" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          {deptPerf.length > 0 && (
+            <div style={S.card}>
+              <div style={S.h2}>Departman performansı</div>
+              <div style={{ overflowX: "auto", marginTop: 12 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 520 }}>
+                  <thead><tr style={{ borderBottom: `2px solid ${T.line}` }}>
+                    {["Departman", "Toplam", "Kapatılan", "Açık", "Ort. çözüm", "SLA uyum"].map((h, i) => (
+                      <th key={h} style={{ padding: "9px 8px", textAlign: i === 0 ? "left" : "center", color: T.sub, fontSize: 11.5, fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {deptPerf.map(d => (
+                      <tr key={d.ad} style={{ borderBottom: `1px solid ${T.line}` }}>
+                        <td style={{ padding: "9px 8px", fontWeight: 600, color: T.ink }}>{d.ad}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>{d.toplam}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center", color: T.green, fontWeight: 600 }}>{d.kapanan}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center", color: d.acik > 0 ? T.amber : T.faint }}>{d.acik}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>{sureMetni(d.ortCozum)}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>
+                          {d.sla !== null ? <span style={S.tag(d.sla >= 80 ? T.greenSoft : d.sla >= 60 ? T.amberSoft : T.redSoft, d.sla >= 80 ? T.green : d.sla >= 60 ? T.amber : T.red)}>%{d.sla}</span> : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {kisiPerf.length > 0 && (
+            <div style={S.card}>
+              <div style={S.h2}>Personel performansı</div>
+              <div style={{ overflowX: "auto", marginTop: 12 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
+                  <thead><tr style={{ borderBottom: `2px solid ${T.line}` }}>
+                    {["Personel", "Üstlendiği", "Kapattığı", "Ort. kabul", "Ort. çözüm", "SLA uyum"].map((h, i) => (
+                      <th key={h} style={{ padding: "9px 8px", textAlign: i === 0 ? "left" : "center", color: T.sub, fontSize: 11.5, fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {kisiPerf.map(k => (
+                      <tr key={k.ad} style={{ borderBottom: `1px solid ${T.line}` }}>
+                        <td style={{ padding: "9px 8px", fontWeight: 600, color: T.ink }}>{k.ad}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>{k.toplam}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center", color: T.green, fontWeight: 600 }}>{k.kapanan}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>{sureMetni(k.ortYanit)}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>{sureMetni(k.ortCozum)}</td>
+                        <td style={{ padding: "9px 8px", textAlign: "center" }}>
+                          {k.sla !== null ? <span style={S.tag(k.sla >= 80 ? T.greenSoft : k.sla >= 60 ? T.amberSoft : T.redSoft, k.sla >= 80 ? T.green : k.sla >= 60 ? T.amber : T.red)}>%{k.sla}</span> : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════ PERSONEL (yalnız yönetici) ═══════════ */
-function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs, reload }) {
+function Personnel({ user, staff, roles = [], depts = [], shifts = [], ticketCats = [], cleanLogs, reload }) {
   const mobil = useIsMobile();
   const shiftNames = shifts.length > 0 ? shifts.map(x => x.name) : FALLBACK_SHIFTS;
   const firstShift = shiftNames[0] || "Tam gün";
@@ -1381,6 +2180,7 @@ function Personnel({ user, staff, roles = [], depts = [], shifts = [], cleanLogs
             title="3. Vardiya" hint="Çalışma saatleri (örn: Sabah 08-17)."
             placeholder="Örn: Sabah (08-17)" usedBy={(s, n) => s.shift === n}
             usedMsg="vardiyası bazı personelde kullanılıyor. Önce o kişilerin vardiyasını değiştirin." />
+          <ArizaKategoriYonetimi user={user} cats={ticketCats} depts={depts} reload={reload} />
         </div>
       ) : (
         <>
@@ -3155,7 +3955,7 @@ function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks =
     ["Toplam karbon ayak izi", `${carbon.toFixed(1)} kg CO₂e`],
     ["Fotoğraflı (kanıtlı) atık kaydı", wasteLogs.filter(w => w.photo_url).length],
     ["UATF'li tehlikeli atık kaydı", wasteLogs.filter(w => w.uatf_no).length],
-    ["Toplam olay / açık", `${incidents.length} / ${incidents.filter(i => i.status === "Açık").length}`],
+    ["Toplam arıza / açık", `${incidents.length} / ${incidents.filter(i => !["kapandi", "iptal"].includes(i.status)).length}`],
     ["Görev (toplam / tamamlanan)", `${scopedTasks.length} / ${scopedTasks.filter(t => t.status === "tamamlandi").length}`],
   ];
 
@@ -3199,11 +3999,10 @@ function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks =
       ad: "Olaylar",
       baslik: "Olay Bildirimleri",
       basliklar: ["Tarih", "Saat", "Bölge", "Bildiren", "Önem", "Açıklama", "Durum"],
-      vurguSatir: (r) => r[6] === "Açık",
+      vurguSatir: (r) => !["Kapatıldı", "İptal"].includes(r[6]),
       satirlar: incidents.slice().reverse().map(i => [
         trDate(i.created_at), trTime(i.created_at), i.zone, i.staff_name || "",
-        i.severity === "high" ? "Yüksek" : i.severity === "medium" ? "Orta" : "Düşük",
-        i.description, i.status,
+        tOncelik(i.severity).label, i.description, tDurum(i.status).label,
       ]),
     } : null;
 
@@ -3245,6 +4044,116 @@ function Report({ user, staff, cleanLogs, wasteLogs, incidents, targets, tasks =
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/* ── ARIZA KATEGORİ YÖNETİMİ (departman yönlendirme + SLA) ── */
+function ArizaKategoriYonetimi({ user, cats = [], depts = [], reload }) {
+  const [ad, setAd] = useState("");
+  const [dept, setDept] = useState("");
+  const [yanit, setYanit] = useState("30");
+  const [cozum, setCozum] = useState("240");
+  const [busy, setBusy] = useState(false);
+  const [duzId, setDuzId] = useState(null);
+  const [duz, setDuz] = useState({});
+
+  const ekle = async () => {
+    if (!ad.trim() || busy) return;
+    if (cats.some(c => c.name.toLowerCase() === ad.trim().toLowerCase())) { alert("Bu kategori zaten var."); return; }
+    setBusy(true);
+    await insertRow("ticket_categories", {
+      name: ad.trim(), department: dept || null,
+      sla_response_min: parseInt(yanit) || 30, sla_resolve_min: parseInt(cozum) || 240,
+    }, user.name);
+    setAd(""); setBusy(false); reload();
+  };
+
+  const kaydet = async (c) => {
+    if (!duz.name?.trim()) return;
+    await updateRow("ticket_categories", c.id, {
+      name: duz.name.trim(), department: duz.department || null,
+      sla_response_min: parseInt(duz.sla_response_min) || 30,
+      sla_resolve_min: parseInt(duz.sla_resolve_min) || 240,
+    }, user.name);
+    setDuzId(null); reload();
+  };
+
+  const sil = async (c) => {
+    if (!window.confirm(`"${c.name}" kategorisi silinsin mi?`)) return;
+    await deactivateRow("ticket_categories", c.id, user.name);
+    reload();
+  };
+
+  if (!isOnline) return null;
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>4. Arıza türleri</div>
+      <div style={S.sub}>Arıza bildirildiğinde otomatik hangi departmana düşeceğini ve hedef süreleri belirler.</div>
+
+      <input style={S.input} placeholder="Örn: Klima arızası" value={ad} onChange={e => setAd(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && ekle()} />
+      <select style={S.input} value={dept} onChange={e => setDept(e.target.value)}>
+        <option value="">— Departman atanmadı —</option>
+        {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+      </select>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div>
+          <label style={S.label}>Kabul hedefi (dk)</label>
+          <input style={S.input} type="number" value={yanit} onChange={e => setYanit(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Çözüm hedefi (dk)</label>
+          <input style={S.input} type="number" value={cozum} onChange={e => setCozum(e.target.value)} />
+        </div>
+      </div>
+      <button onClick={ekle} disabled={!ad.trim() || busy} style={{ ...S.btn, ...S.btnGreen, width: "100%", opacity: (!ad.trim() || busy) ? 0.4 : 1 }}>
+        Kategori ekle
+      </button>
+
+      <div style={{ marginTop: 14 }}>
+        {cats.length === 0 ? (
+          <div style={{ padding: "16px 0", textAlign: "center", color: T.faint, fontSize: 13 }}>Kategori yok.</div>
+        ) : cats.map(c => (
+          <div key={c.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+            {duzId === c.id ? (
+              <div>
+                <input style={{ ...S.input, marginBottom: 6, padding: "7px 10px" }} value={duz.name}
+                  onChange={e => setDuz(p => ({ ...p, name: e.target.value }))} autoFocus />
+                <select style={{ ...S.input, marginBottom: 6, padding: "7px 10px", fontSize: 13 }} value={duz.department || ""}
+                  onChange={e => setDuz(p => ({ ...p, department: e.target.value }))}>
+                  <option value="">— Departman yok —</option>
+                  {depts.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+                </select>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                  <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} type="number" value={duz.sla_response_min}
+                    onChange={e => setDuz(p => ({ ...p, sla_response_min: e.target.value }))} placeholder="Kabul dk" />
+                  <input style={{ ...S.input, marginBottom: 0, padding: "7px 10px" }} type="number" value={duz.sla_resolve_min}
+                    onChange={e => setDuz(p => ({ ...p, sla_resolve_min: e.target.value }))} placeholder="Çözüm dk" />
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => kaydet(c)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGreen }}>Kaydet</button>
+                  <button onClick={() => setDuzId(null)} style={{ ...S.btn, padding: "7px 12px", fontSize: 12, ...S.btnGhost }}>İptal</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, color: T.ink }}>{c.name}</div>
+                  <div style={{ fontSize: 11.5, color: T.faint }}>
+                    {c.department ? <span style={{ color: T.green }}>{c.department}</span> : <span style={{ color: T.amber }}>departman yok</span>}
+                    {" · "}kabul {c.sla_response_min} dk · çözüm {c.sla_resolve_min} dk
+                  </div>
+                </div>
+                <button onClick={() => { setDuzId(c.id); setDuz({ name: c.name, department: c.department || "", sla_response_min: c.sla_response_min, sla_resolve_min: c.sla_resolve_min }); }}
+                  style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.blueSoft, color: T.blue }}>Düzenle</button>
+                <button onClick={() => sil(c)} style={{ ...S.btn, padding: "6px 11px", fontSize: 12, background: T.redSoft, color: T.red }}>Sil</button>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
