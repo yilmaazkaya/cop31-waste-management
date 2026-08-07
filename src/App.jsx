@@ -587,6 +587,9 @@ function atanabilirKisiler(staff, user) {
     ? staff.filter(s => s.department === user.department && s.id !== user.id)
     : [];
   const harita = new Map();
+  /* Kullanıcının kendisi de listede olsun (kendine görev atayabilsin) */
+  const kendisi = staff.find(s => s.id === user.id);
+  if (kendisi) harita.set(kendisi.id, kendisi);
   [...astlar, ...ayniDept].forEach(s => harita.set(s.id, s));
   return [...harita.values()];
 }
@@ -3196,8 +3199,8 @@ function GorevListesi({ user, staff, tasks, roles = [], depts = [], reload }) {
         <FilterBar depts={depts} roles={roles} dept={dept} setDept={setDept} role={role} setRole={setRole}
           note={filtering ? `${visible.length} görev gösteriliyor` : null} />
       )}
-      <div style={{ display: "grid", gridTemplateColumns: (isAdmin && !mobil) ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
-        {isAdmin && <NewTaskForm user={user} staff={staff} roles={roles} depts={depts} reload={reload} />}
+      <div style={{ display: "grid", gridTemplateColumns: !mobil ? "minmax(300px, 380px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
+        <NewTaskForm user={user} staff={staff} roles={roles} depts={depts} reload={reload} />
 
         <div style={S.card}>
           {/* Başlık + araçlar */}
