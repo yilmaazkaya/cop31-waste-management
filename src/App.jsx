@@ -4604,13 +4604,6 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
 
   /* Kaynak lokasyondaki mevcut bakiye */
   const mevcut = f.item_id && f.from_loc ? bakiye(moves, f.item_id, f.from_loc) : null;
-  /* DEBUG — tarayıcı konsolunda F12 ile bakın, sonra silinecek */
-  if (f.item_id && f.from_loc) {
-    const eslesen = moves.filter(m => m.item_id === f.item_id);
-    const depodaki = moves.filter(m => m.to_loc === f.from_loc && m.item_id === f.item_id);
-    console.log("DEBUG-STOK", { item_id: f.item_id, from_loc: f.from_loc, mevcut, toplamMove: moves.length, eslesenItem: eslesen.length, depodakiMove: depodaki.length });
-    if (eslesen.length === 0 && moves.length > 0) { console.log("DEBUG-STOK ilk 3 move item_id:", moves.slice(0, 3).map(m => m.item_id)); }
-  }
   const yetersiz = mevcut !== null && Number(f.qty) > mevcut && tip !== "sayim";
 
   useEffect(() => {
