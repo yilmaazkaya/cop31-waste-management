@@ -4418,8 +4418,8 @@ function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], relo
   });
 
   const kritikler = ozet.filter(i => i.kritik);
-  const bugunTuketim = aktifMoves.filter(m => m.move_type === "tuketim" && isToday(m.created_at));
-  const bugunSevk = aktifMoves.filter(m => m.move_type === "transfer" && isToday(m.created_at));
+  const bugunTuketim = aktifMoves.filter(m => m.move_type === "tuketim" && isToday(m.move_date || m.created_at));
+  const bugunSevk = aktifMoves.filter(m => m.move_type === "transfer" && isToday(m.move_date || m.created_at));
 
   const SEKME = [
     { id: "durum",   label: "Stok durumu" },
@@ -4589,7 +4589,8 @@ function StokDurum({ ozet, ara, setAra, mobil, moves }) {
 /* ── 2) HAREKET GİRİŞİ ── */
 function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
   const [tip, setTip] = useState("tuketim");
-  const [f, setF] = useState({ item_id: "", qty: "", from_loc: "", to_loc: "", note: "", doc_no: "" });
+  const bugunISO = new Date().toISOString().slice(0, 10);
+  const [f, setF] = useState({ item_id: "", qty: "", from_loc: "", to_loc: "", note: "", doc_no: "", move_date: bugunISO });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState(false);
   const [mesaj, setMesaj] = useState("");
@@ -4645,6 +4646,7 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
         from_loc: kaynakGerek ? f.from_loc : null,
         to_loc: hedefGerek ? f.to_loc : null,
         note: r.note || null, doc_no: f.doc_no || null, staff_name: user.name,
+        move_date: f.move_date || bugunISO,
       }, user.name);
     }
     setF(p => ({ ...p, item_id: "", qty: "", note: "", doc_no: "" }));
@@ -4717,6 +4719,15 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
           </>
         )}
 
+        <label style={S.label}>Hareket tarihi <span style={{ color: T.red }}>*</span></label>
+        <input style={S.input} type="date" max={bugunISO} value={f.move_date}
+          onChange={e => set("move_date", e.target.value)} />
+        {f.move_date !== bugunISO && (
+          <div style={{ fontSize: 12, color: T.amber, marginTop: -9, marginBottom: 12 }}>
+            Geçmiş tarihli kayıt giriyorsunuz.
+          </div>
+        )}
+
         <label style={S.label}>Not</label>
         <input style={S.input} placeholder="İsteğe bağlı açıklama" value={f.note} onChange={e => set("note", e.target.value)} />
 
@@ -4780,7 +4791,10 @@ function StokHareket({ user, items, moves, noktalar, reload, isAdmin, mobil }) {
                   {m.to_loc && <>{m.to_loc === DEPO ? "Depo" : m.to_loc}</>}
                   {m.doc_no && ` · ${m.doc_no}`}
                   {m.note && ` · ${m.note}`}
-                  <span style={{ color: T.faint }}> · {m.staff_name} · {trDate(m.created_at)} {trTime(m.created_at)}</span>
+                  <span style={{ color: T.faint }}> · {m.staff_name} · {trDate(m.move_date || m.created_at)}</span>
+                  {m.move_date && String(m.move_date).slice(0, 10) !== String(m.created_at).slice(0, 10) && (
+                    <span style={{ color: T.amber }}> (kayıt: {trDate(m.created_at)} {trTime(m.created_at)})</span>
+                  )}
                 </div>
               </div>
             );
