@@ -613,7 +613,10 @@ function staffMatches(s, dept, role) {
 }
 
 /* ═══════════ GENEL DURUM ═══════════ */
-function Dashboard({ user, zones = [], cleanLogs, wasteLogs, incidents, targets, assignments }) {
+function Dashboard(props) {
+  const { user, zones = [], cleanLogs, wasteLogs, incidents, targets, assignments,
+          staff = [], tasks = [], depts = [], roles = [], stockItems = [], stockMoves = [] } = props;
+  const [gorunum, setGorunum] = useState("ozet");
   const [usage, setUsage] = useState(null);
   useEffect(() => {
     if (user?.is_admin && isOnline) storageUsage().then(setUsage).catch(() => {});
@@ -648,8 +651,37 @@ function Dashboard({ user, zones = [], cleanLogs, wasteLogs, incidents, targets,
     { label: "Açık olay", value: openInc, unit: "bildirim", accent: openInc > 0 ? T.red : T.faint },
   ];
 
+  const D_SEKME = [
+    { id: "ozet",    label: "Özet" },
+    { id: "gorev",   label: "Görev analizi" },
+    { id: "ariza",   label: "Arıza performansı" },
+    { id: "tuketim", label: "Tüketim analizi" },
+  ];
+
   return (
     <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {D_SEKME.map(v => (
+          <button key={v.id} onClick={() => setGorunum(v.id)} style={{
+            ...S.btn, padding: "9px 16px", fontSize: 13.5,
+            background: gorunum === v.id ? T.green : "#fbfcfb",
+            color: gorunum === v.id ? "#fff" : T.sub,
+            border: `1.5px solid ${gorunum === v.id ? T.green : T.line}`,
+          }}>{v.label}</button>
+        ))}
+      </div>
+
+      {gorunum === "gorev" && (
+        <TaskAnalytics user={user} staff={staff} tasks={tasks} depts={depts} roles={roles} />
+      )}
+      {gorunum === "ariza" && (
+        <ArizaPerformans incidents={incidents} depts={depts} staff={staff} />
+      )}
+      {gorunum === "tuketim" && (
+        <TuketimAnaliz items={stockItems} moves={stockMoves.filter(m => m.active !== false)} zones={zones} />
+      )}
+
+      {gorunum === "ozet" && <>
       {delays.length > 0 && (
         <div style={{ ...S.card, background: T.redSoft, borderColor: "#e5b8b8" }}>
           <div style={{ fontWeight: 700, color: T.red, fontSize: 14, marginBottom: 8 }}>⚠ Geciken temizlik görevleri</div>
@@ -732,6 +764,7 @@ function Dashboard({ user, zones = [], cleanLogs, wasteLogs, incidents, targets,
           </div>
         </div>
       )}
+      </>}
     </div>
   );
 }
@@ -1124,11 +1157,6 @@ function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], t
       depts={depts} ticketCats={ticketCats} onBack={() => setAcikId(null)} reload={reload} />;
   }
 
-  if (gorunum === "performans") {
-    return <ArizaPerformans incidents={gorunur} depts={depts} staff={staff}
-      onBack={() => setGorunum("liste")} />;
-  }
-
   if (gorunum === "turler") {
     return (
       <div>
@@ -1164,7 +1192,6 @@ function Incidents({ user, zones = [], incidents = [], staff = [], depts = [], t
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <button onClick={() => setGorunum("yeni")} style={{ ...S.btn, ...S.btnGreen }}>+ Arıza bildir</button>
-        <button onClick={() => setGorunum("performans")} style={{ ...S.btn, ...S.btnGhost }}>Performans raporu</button>
         {isAdmin && (
           <button onClick={() => setGorunum("turler")} style={{ ...S.btn, ...S.btnGhost }}>Arıza türleri & SLA</button>
         )}
@@ -1849,7 +1876,7 @@ function ArizaPerformans({ incidents, depts, staff, onBack }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Arıza listesi</button>
+        {onBack && <button onClick={onBack} style={{ ...S.btn, ...S.btnGhost }}>← Arıza listesi</button>}
         <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
           {[7, 30, 90].map(g => (
             <button key={g} onClick={() => setGun(g)} style={{
@@ -2957,21 +2984,9 @@ const priOf = (id) => PRIORITIES.find(p => p.id === id) || PRIORITIES[1];
 const parseCl = (s) => { try { return JSON.parse(s || "[]"); } catch { return []; } };
 
 function TaskManager(props) {
-  const { user } = props;
-  const [anaSekme, setAnaSekme] = useState("gorevler");
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {[{ id: "gorevler", label: "Görevler" }, { id: "analiz", label: "Analiz & performans" }].map(v => (
-          <button key={v.id} onClick={() => setAnaSekme(v.id)} style={{
-            ...S.btn, padding: "9px 16px", fontSize: 13.5,
-            background: anaSekme === v.id ? T.green : "#fbfcfb",
-            color: anaSekme === v.id ? "#fff" : T.sub,
-            border: `1.5px solid ${anaSekme === v.id ? T.green : T.line}`,
-          }}>{v.label}</button>
-        ))}
-      </div>
-      {anaSekme === "gorevler" ? <GorevListesi {...props} /> : <TaskAnalytics {...props} />}
+      <GorevListesi {...props} />
     </div>
   );
 }
@@ -4425,7 +4440,6 @@ function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], relo
     { id: "durum",   label: "Stok durumu" },
     { id: "hareket", label: "Hareket girişi" },
     { id: "bolge",   label: "Bölge stokları" },
-    { id: "analiz",  label: "Tüketim analizi" },
     { id: "siparis", label: "Sipariş önerisi" },
     ...(isAdmin ? [{ id: "tanim", label: "Malzeme tanımları" }] : []),
   ];
@@ -4483,9 +4497,6 @@ function StokYonetimi({ user, zones = [], stockItems = [], stockMoves = [], relo
       )}
       {gorunum === "bolge" && (
         <BolgeStok items={stockItems} moves={aktifMoves} zones={zones} mobil={mobil} />
-      )}
-      {gorunum === "analiz" && (
-        <TuketimAnaliz items={stockItems} moves={aktifMoves} zones={zones} />
       )}
       {gorunum === "siparis" && (
         <SiparisOnerisi items={stockItems} moves={aktifMoves} />
